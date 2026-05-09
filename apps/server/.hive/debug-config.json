@@ -1,0 +1,21 @@
+{
+  "enabled": false,
+  "globalLevel": "info",
+  "includeTimestamps": true,
+  "includeDuration": true,
+  "includeArgs": false,
+  "includeResult": false,
+  "maxResultLength": 200,
+  "filterPatterns": ["*"],
+  "excludePatterns": [
+    "telemetry.emit",
+    "appendFileSync",
+    "rotateLogs",
+    "getCookieHeader",
+    "mergeCookies"
+  ],
+  "excludeFiles": ["telemetry.ts"],
+  "depthLimit": 3,
+  "autoUpdate": true,
+  "watchIntervalMs": 5000
+}

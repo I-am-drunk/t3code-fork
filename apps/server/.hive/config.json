@@ -1,0 +1,28 @@
+{
+  "agents": {
+    "vale": {
+      "model": "zai/glm-5-turbo"
+    },
+    "rafe": {
+      "model": "zai/glm-4-6",
+      "max_tool_calls": 300
+    },
+    "knox": {
+      "model": "zai/glm-4-6",
+      "max_tool_calls": 400
+    }
+  },
+  "guardrails": {
+    "enabled": true,
+    "max_tool_calls": 200
+  },
+  "context_budget": {
+    "enabled": true,
+    "max_injection_tokens": 4000
+  },
+  "execution_mode": "balanced",
+  "synthesis": {
+    "single_output": true,
+    "format": "hybrid"
+  }
+}
