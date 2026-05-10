@@ -11,34 +11,76 @@ const fetchProjectListMock = async () =>
   );
 
 describe("parseCredits", () => {
-  it("reads common nested credit shapes", () => {
+  it("normalizes decimal and integer payloads into explicit minor units", () => {
     expect(
       parseCredits({
         usage: {
-          remaining: "42",
-          total: 100,
+          remaining: "1.17",
+          total: 2.5,
           resetAt: "2026-06-01T00:00:00.000Z",
         },
       }),
     ).toEqual({
-      remaining: 42,
-      total: 100,
+      remainingMinorUnits: 117,
+      totalMinorUnits: 250,
+      remaining: 117,
+      total: 250,
+      minorUnitScale: 2,
       resetAt: "2026-06-01T00:00:00.000Z",
     });
-  });
 
-  it("reads the installed CLI user creditBalance shape", () => {
     expect(
       parseCredits({
         firstName: "TJ",
         planTier: "pro",
-        creditBalance: 321,
+        creditBalance: 117,
       }),
-    ).toEqual({ remaining: 321 });
+    ).toEqual({
+      remainingMinorUnits: 117,
+      remaining: 117,
+      minorUnitScale: 2,
+    });
+  });
+
+  it("supports decimal numbers and integer strings without flooring positive values", () => {
+    expect(parseCredits({ credits: { remaining: 1.17 } })?.remainingMinorUnits).toBe(117);
+    expect(parseCredits({ credits: { remaining: "117" } })?.remainingMinorUnits).toBe(117);
+    expect(parseCredits({ credits: { remaining: "0.01" } })?.remainingMinorUnits).toBe(1);
+  });
+
+  it("returns undefined for missing/invalid/negative credit values", () => {
+    expect(parseCredits({ credits: { remaining: null } })).toBeUndefined();
+    expect(parseCredits({ credits: { remaining: "NaN" } })).toBeUndefined();
+    expect(parseCredits({ credits: { remaining: -1 } })).toBeUndefined();
+    expect(parseCredits({ credits: { remaining: "-0.5" } })).toBeUndefined();
   });
 });
 
 describe("VibecodeClient", () => {
+  it("surfaces sanitized upstream reasons and parse diagnostics when validating keys", async () => {
+    const client = new VibecodeClient({
+      baseUrl: "https://vibecode.test",
+      fetch: (async () =>
+        new Response(
+          JSON.stringify({
+            authenticated: true,
+            creditBalance: "1.17",
+            message: "Bearer vibecode_1234567890_token",
+          }),
+          { status: 200 },
+        )) as typeof fetch,
+    });
+
+    await expect(client.validateApiKey("key")).resolves.toMatchObject({
+      authenticated: true,
+      credits: { remainingMinorUnits: 117, minorUnitScale: 2 },
+      upstreamReason: "Bearer [redacted]",
+      diagnostics: {
+        creditsParseState: "parsed",
+      },
+    });
+  });
+
   it("uses the real CLI q query parameter for project search", async () => {
     const requests: Array<string> = [];
     const client = new VibecodeClient({

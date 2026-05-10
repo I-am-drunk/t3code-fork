@@ -19,8 +19,8 @@ import * as Stream from "effect/Stream";
 import { ProviderAdapterRequestError, ProviderAdapterSessionNotFoundError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import {
+  getVibecodeRuntimeEligibility,
   markActiveVibecodeKeyUsed,
-  readVibecodeApiKeyForProvider,
 } from "../../vibecode/VibecodeAuthService.ts";
 import {
   ensureVibecodeLocalMirror,
@@ -223,9 +223,20 @@ export function makeVibecodeAdapter(input: {
         "Configure a Vibecode project ID or direct agent URL in provider settings before sending turns.",
       );
     }
-    const apiKey = await readVibecodeApiKeyForProvider(projectId);
-    if (!apiKey) throw new Error("Add a valid Vibecode API key before sending with Vibecode.");
-    const access = await client.ensureSandboxAccess(apiKey, projectId);
+    const correlationId = `vibecode-runtime-${crypto.randomUUID()}`;
+    const eligibility = await getVibecodeRuntimeEligibility({
+      projectId,
+      correlationId,
+    });
+    if (!eligibility.eligible || !eligibility.apiKey) {
+      const detail = eligibility.upstreamReason
+        ? `${eligibility.message} (${eligibility.upstreamReason})`
+        : eligibility.message;
+      throw new Error(
+        `Vibecode is currently blocked (${eligibility.reasonCode}). ${detail} [ref: ${correlationId}]`,
+      );
+    }
+    const access = await client.ensureSandboxAccess(eligibility.apiKey, projectId);
     await markActiveVibecodeKeyUsed();
     const localMirrorPath = await ensureVibecodeLocalMirror(projectId);
     const agentUrl = access.links.agentUrl?.url;
