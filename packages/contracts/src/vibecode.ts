@@ -9,20 +9,40 @@ import {
   TrimmedString,
 } from "./baseSchemas.ts";
 
-export const VibecodeApiKeyStatus = Schema.Literals([
-  "missing",
-  "valid",
-  "invalid",
+export const VibecodeAuthStatus = Schema.Literals([
+  "missing_key",
+  "invalid_key",
   "exhausted",
-  "checking",
+  "available",
+  "unknown",
+  "refreshing",
 ]);
+export type VibecodeAuthStatus = typeof VibecodeAuthStatus.Type;
+
+export const VibecodeApiKeyStatus = VibecodeAuthStatus;
 export type VibecodeApiKeyStatus = typeof VibecodeApiKeyStatus.Type;
 
+export const VibecodeAuthReasonCode = Schema.Literals([
+  "missing_key",
+  "invalid_key",
+  "credits_exhausted",
+  "credits_available",
+  "credits_unknown",
+  "project_access_denied",
+  "upstream_unavailable",
+  "refresh_in_progress",
+  "unknown",
+]);
+export type VibecodeAuthReasonCode = typeof VibecodeAuthReasonCode.Type;
+
 export const VibecodeCredits = Schema.Struct({
-  remaining: NonNegativeInt,
-  total: Schema.optional(NonNegativeInt),
+  remainingMinorUnits: NonNegativeInt,
+  totalMinorUnits: Schema.optional(NonNegativeInt),
+  minorUnitScale: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 })),
   resetAt: Schema.optional(IsoDateTime),
   label: Schema.optional(TrimmedNonEmptyString),
+  remaining: Schema.optional(NonNegativeInt),
+  total: Schema.optional(NonNegativeInt),
 });
 export type VibecodeCredits = typeof VibecodeCredits.Type;
 
@@ -46,6 +66,7 @@ export const VibecodeKeyPoolStatus = Schema.Struct({
   healthyCount: NonNegativeInt,
   exhaustedCount: NonNegativeInt,
   invalidCount: NonNegativeInt,
+  unknownCount: NonNegativeInt,
 });
 export type VibecodeKeyPoolStatus = typeof VibecodeKeyPoolStatus.Type;
 
@@ -58,12 +79,19 @@ export const VibecodeProjectAccess = Schema.Struct({
 export type VibecodeProjectAccess = typeof VibecodeProjectAccess.Type;
 
 export const VibecodeAuthStatusResult = Schema.Struct({
-  status: VibecodeApiKeyStatus,
+  status: VibecodeAuthStatus,
+  reasonCode: VibecodeAuthReasonCode,
   authenticated: Schema.Boolean,
   source: Schema.Literals(["none", "environment", "stored"]),
+  keyPresent: Schema.Boolean,
+  creditsKnown: Schema.Boolean,
   credits: Schema.optional(VibecodeCredits),
   keyPool: Schema.optional(VibecodeKeyPoolStatus),
   message: Schema.optional(TrimmedNonEmptyString),
+  upstreamReason: Schema.optional(TrimmedNonEmptyString),
+  refreshing: Schema.Boolean,
+  refreshVersion: NonNegativeInt,
+  runtimeInstanceId: TrimmedNonEmptyString,
   checkedAt: IsoDateTime,
 });
 export type VibecodeAuthStatusResult = typeof VibecodeAuthStatusResult.Type;
@@ -77,12 +105,18 @@ export type VibecodeRotateApiKeyInput = typeof VibecodeRotateApiKeyInput.Type;
 
 export const VibecodeRotateApiKeyResult = Schema.Struct({
   accepted: Schema.Boolean,
-  status: VibecodeApiKeyStatus,
+  status: VibecodeAuthStatus,
+  reasonCode: VibecodeAuthReasonCode,
   authenticated: Schema.Boolean,
+  keyPresent: Schema.Boolean,
+  creditsKnown: Schema.Boolean,
   credits: Schema.optional(VibecodeCredits),
   keyPool: Schema.optional(VibecodeKeyPoolStatus),
   projectAccess: VibecodeProjectAccess,
   message: Schema.optional(TrimmedNonEmptyString),
+  upstreamReason: Schema.optional(TrimmedNonEmptyString),
+  refreshVersion: NonNegativeInt,
+  runtimeInstanceId: TrimmedNonEmptyString,
   checkedAt: IsoDateTime,
 });
 export type VibecodeRotateApiKeyResult = typeof VibecodeRotateApiKeyResult.Type;

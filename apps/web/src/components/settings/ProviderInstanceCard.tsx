@@ -48,7 +48,7 @@ import {
   getProviderVersionLabel,
   type ProviderStatusKey,
 } from "./providerStatus";
-import { formatVibecodeCredits } from "../../lib/formatVibecodeCredits";
+import { getVibecodeStatusPresentation } from "../../lib/vibecodeStatusPresentation";
 
 const PROVIDER_ACCENT_SWATCHES = [
   "#2563eb",
@@ -491,12 +491,19 @@ function VibecodeApiKeySection({
       });
       setStatus({
         status: result.status,
+        reasonCode: result.reasonCode,
         authenticated: result.authenticated,
         source: "stored",
-        checkedAt: result.checkedAt,
+        keyPresent: result.keyPresent,
+        creditsKnown: result.creditsKnown,
         ...(result.credits ? { credits: result.credits } : {}),
         ...(result.keyPool ? { keyPool: result.keyPool } : {}),
         ...(result.message ? { message: result.message } : {}),
+        ...(result.upstreamReason ? { upstreamReason: result.upstreamReason } : {}),
+        refreshing: false,
+        refreshVersion: result.refreshVersion,
+        runtimeInstanceId: result.runtimeInstanceId,
+        checkedAt: result.checkedAt,
       });
       setMessage(result.message ?? (result.accepted ? "Vibecode API key saved." : "Key rejected."));
       if (result.accepted) setApiKey("");
@@ -507,21 +514,9 @@ function VibecodeApiKeySection({
     }
   };
 
-  const credits = status?.credits;
-  const statusLabel =
-    status?.status === "missing"
-      ? "No API key"
-      : status?.status === "exhausted"
-        ? "Credits exhausted"
-        : credits !== undefined
-          ? formatVibecodeCredits(credits)
-          : status?.status === "valid"
-            ? "Key valid"
-            : status?.status === "invalid"
-              ? "Key invalid"
-              : "Checking";
-  const badgeVariant =
-    status?.status === "valid" ? "success" : status?.status === "missing" ? "warning" : "error";
+  const statusPresentation = getVibecodeStatusPresentation(status);
+  const statusLabel = statusPresentation.label;
+  const badgeVariant = statusPresentation.variant;
 
   return (
     <div className="border-t border-border/60 px-4 py-3 sm:px-5">
@@ -551,7 +546,7 @@ function VibecodeApiKeySection({
             disabled={busy}
           />
           <Button size="sm" onClick={() => void saveApiKey()} disabled={busy}>
-            {busy ? "Checking..." : status?.status === "valid" ? "Replace key" : "Save key"}
+            {busy ? "Checking..." : status?.status === "available" ? "Replace key" : "Save key"}
           </Button>
         </div>
         {(message ?? status?.message) ? (

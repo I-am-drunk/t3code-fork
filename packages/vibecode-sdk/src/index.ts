@@ -13,6 +13,13 @@ export interface VibecodeValidationResult {
   readonly authenticated: boolean;
   readonly credits?: VibecodeCredits | undefined;
   readonly message?: string | undefined;
+  readonly upstreamReason?: string | undefined;
+  readonly diagnostics?:
+    | {
+        readonly creditsParseState: "parsed" | "missing" | "invalid";
+        readonly payloadShape: string;
+      }
+    | undefined;
 }
 
 export interface VibecodeProject {
@@ -132,22 +139,47 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function numberFromUnknown(value: unknown): number | undefined {
-  const normalize = (parsed: number, { scaled }: { readonly scaled: boolean }): number => {
-    const normalized = scaled ? Math.round(parsed * 100) : Math.round(parsed);
-    return Math.max(0, normalized);
+  const normalize = (parsed: number) => Math.max(0, Math.round(parsed));
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return normalize(value);
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    if (!Number.isFinite(parsed)) return undefined;
+    return normalize(parsed);
+  }
+
+  return undefined;
+}
+
+const DEFAULT_CREDITS_MINOR_UNIT_SCALE = 2;
+
+function creditsMinorUnitsFromUnknown(value: unknown): number | undefined {
+  const normalize = (parsed: number): number => {
+    if (!Number.isFinite(parsed) || parsed < 0) return NaN;
+    return Math.round(parsed);
   };
 
   if (typeof value === "number" && Number.isFinite(value)) {
-    const scaled = !Number.isInteger(value);
-    return normalize(value, { scaled });
+    const parsed = Number.isInteger(value)
+      ? normalize(value)
+      : normalize(value * 10 ** DEFAULT_CREDITS_MINOR_UNIT_SCALE);
+    return Number.isNaN(parsed) ? undefined : parsed;
   }
 
   if (typeof value === "string" && value.trim().length > 0) {
     const trimmed = value.trim();
-    const parsed = Number(trimmed);
+    const normalizedString = trimmed.replace(/,/gu, ".");
+    const parsed = Number(normalizedString);
     if (!Number.isFinite(parsed)) return undefined;
-    const scaled = trimmed.includes(".") || trimmed.includes(",");
-    return normalize(parsed, { scaled });
+    const usesDecimal = normalizedString.includes(".");
+    const scaledValue = usesDecimal
+      ? parsed * 10 ** DEFAULT_CREDITS_MINOR_UNIT_SCALE
+      : parsed;
+    const normalized = normalize(scaledValue);
+    return Number.isNaN(normalized) ? undefined : normalized;
   }
 
   return undefined;
@@ -157,15 +189,33 @@ function stringFromUnknown(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function sanitizeUpstreamMessage(message: string): string {
+  return message
+    .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
+    .replace(/\b(vibecode_[A-Za-z0-9._-]{8,})\b/gu, "[redacted]")
+    .replace(/\b(sk-[A-Za-z0-9._-]{8,})\b/gu, "[redacted]")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 function messageFromErrorPayload(payload: unknown): string | undefined {
   const record = asRecord(payload);
   if (!record) return undefined;
-  return (
+  const message =
     stringFromUnknown(record.message) ??
     stringFromUnknown(record.error) ??
     stringFromUnknown(asRecord(record.error)?.message) ??
-    stringFromUnknown(record.detail)
-  );
+    stringFromUnknown(record.detail);
+  return message ? sanitizeUpstreamMessage(message) : undefined;
+}
+
+function payloadShapeSummary(value: unknown): string {
+  if (Array.isArray(value)) return `array(len=${value.length})`;
+  if (value === null) return "null";
+  if (typeof value !== "object") return typeof value;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `object(keys=${keys.slice(0, 12).join(",")})`;
 }
 
 function findNestedRecord(record: Record<string, unknown>, keys: ReadonlyArray<string>) {
@@ -359,30 +409,51 @@ function parseJsonLine(line: string): VibecodeAgentMessage | undefined {
   return undefined;
 }
 
+function hasCreditsSignal(value: unknown): boolean {
+  const root = asRecord(value);
+  if (!root) return false;
+  const creditsRecord = findNestedRecord(root, ["credits", "usage", "quota", "billing"]);
+  return [
+    creditsRecord.remaining,
+    creditsRecord.available,
+    creditsRecord.balance,
+    creditsRecord.credits,
+    creditsRecord.total,
+    creditsRecord.limit,
+    creditsRecord.monthly,
+    root.creditBalance,
+    root.creditsRemaining,
+  ].some((entry) => entry !== undefined && entry !== null);
+}
+
 export function parseCredits(value: unknown): VibecodeCredits | undefined {
   const root = asRecord(value);
   if (!root) return undefined;
   const creditsRecord = findNestedRecord(root, ["credits", "usage", "quota", "billing"]);
-  const remaining =
-    numberFromUnknown(creditsRecord.remaining) ??
-    numberFromUnknown(creditsRecord.available) ??
-    numberFromUnknown(creditsRecord.balance) ??
-    numberFromUnknown(creditsRecord.credits) ??
-    numberFromUnknown(root.creditBalance) ??
-    numberFromUnknown(root.creditsRemaining);
-  if (remaining === undefined) return undefined;
-  const total =
-    numberFromUnknown(creditsRecord.total) ??
-    numberFromUnknown(creditsRecord.limit) ??
-    numberFromUnknown(creditsRecord.monthly);
+  const remainingMinorUnits =
+    creditsMinorUnitsFromUnknown(creditsRecord.remaining) ??
+    creditsMinorUnitsFromUnknown(creditsRecord.available) ??
+    creditsMinorUnitsFromUnknown(creditsRecord.balance) ??
+    creditsMinorUnitsFromUnknown(creditsRecord.credits) ??
+    creditsMinorUnitsFromUnknown(root.creditBalance) ??
+    creditsMinorUnitsFromUnknown(root.creditsRemaining);
+  if (remainingMinorUnits === undefined) return undefined;
+  const totalMinorUnits =
+    creditsMinorUnitsFromUnknown(creditsRecord.total) ??
+    creditsMinorUnitsFromUnknown(creditsRecord.limit) ??
+    creditsMinorUnitsFromUnknown(creditsRecord.monthly);
   const resetAt =
     stringFromUnknown(creditsRecord.resetAt) ??
     stringFromUnknown(creditsRecord.resetsAt) ??
     stringFromUnknown(creditsRecord.renewalAt);
   const label = stringFromUnknown(creditsRecord.label);
   return {
-    remaining,
-    ...(total !== undefined ? { total } : {}),
+    remainingMinorUnits,
+    minorUnitScale: DEFAULT_CREDITS_MINOR_UNIT_SCALE,
+    remaining: remainingMinorUnits,
+    ...(totalMinorUnits !== undefined
+      ? { totalMinorUnits, total: totalMinorUnits }
+      : {}),
     ...(resetAt ? { resetAt } : {}),
     ...(label ? { label } : {}),
   };
@@ -410,6 +481,12 @@ export class VibecodeClient {
     const payload = await this.requestJson(apiKey, "/v1/user");
     const record = asRecord(payload);
     const credits = parseCredits(payload);
+    const creditsParseState = credits
+      ? "parsed"
+      : hasCreditsSignal(payload)
+        ? "invalid"
+        : "missing";
+    const upstreamReason = messageFromErrorPayload(payload);
     const authenticated =
       record?.authenticated === true ||
       record?.ok === true ||
@@ -422,6 +499,11 @@ export class VibecodeClient {
       authenticated,
       ...(credits ? { credits } : {}),
       ...(authenticated ? {} : { message: "Vibecode did not accept the API key." }),
+      ...(upstreamReason ? { upstreamReason } : {}),
+      diagnostics: {
+        creditsParseState,
+        payloadShape: payloadShapeSummary(payload),
+      },
     };
   }
 

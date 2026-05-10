@@ -59,12 +59,12 @@ export function buildVibecodeProviderSnapshot(
     }
 
     const auth = yield* Effect.promise(() => getVibecodeAuthStatus());
-    const isReady = auth.status === "valid";
-    const isExhausted = auth.status === "exhausted";
-    const isMissing = auth.status === "missing";
-    const message =
-      auth.message ??
-      (isMissing ? "Add a Vibecode API key in Settings -> Providers before sending turns." : null);
+    const isReady = auth.status === "available";
+    const isWarning =
+      auth.status === "missing_key" ||
+      auth.status === "exhausted" ||
+      auth.status === "unknown" ||
+      auth.status === "refreshing";
     return buildServerProvider({
       presentation: { displayName: "Vibecode", badgeLabel: "Native" },
       enabled: true,
@@ -73,13 +73,13 @@ export function buildVibecodeProviderSnapshot(
       probe: {
         installed: true,
         version: null,
-        status: isReady ? "ready" : isExhausted || isMissing ? "warning" : "error",
+        status: isReady ? "ready" : isWarning ? "warning" : "error",
         auth: auth.authenticated
           ? { status: "authenticated" }
-          : auth.status === "missing"
+          : auth.status === "missing_key" || auth.status === "unknown"
             ? { status: "unknown" }
             : { status: "unauthenticated" },
-        ...(message ? { message } : {}),
+        ...(auth.message ? { message: auth.message } : {}),
       },
     });
   });

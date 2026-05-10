@@ -21,7 +21,7 @@ import { Toggle } from "../ui/toggle";
 import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
-import { formatVibecodeCredits } from "../../lib/formatVibecodeCredits";
+import { getVibecodeStatusPresentation } from "../../lib/vibecodeStatusPresentation";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -104,30 +104,25 @@ export const ChatHeader = memo(function ChatHeader({
     activeThreadEnvironmentId,
     primaryEnvironmentId,
   });
-  const vibecodeCredits = vibecodeAuthStatus?.credits;
   const activeVibecodeKey = vibecodeAuthStatus?.keyPool?.keys.find((key) => key.active) ?? null;
-  const vibecodeNeedsKey =
-    vibecodeAuthStatus?.status === "missing" ||
-    vibecodeAuthStatus?.status === "invalid" ||
-    vibecodeAuthStatus?.status === "exhausted";
+  const vibecodePresentation = getVibecodeStatusPresentation(vibecodeAuthStatus);
   const vibecodeBadgeVariant =
-    vibecodeAuthStatus?.status === "invalid" || vibecodeAuthStatus?.status === "exhausted"
-      ? "destructive"
-      : vibecodeCredits && vibecodeCredits.remaining <= 10
+    vibecodePresentation.variant === "success"
+      ? "success"
+      : vibecodePresentation.variant === "secondary"
         ? "secondary"
-        : "outline";
-  const vibecodeBadgeText = vibecodeNeedsKey
-    ? "Key needed"
-    : vibecodeCredits
-      ? formatVibecodeCredits(vibecodeCredits)
-      : "Checking";
+        : vibecodePresentation.variant === "warning"
+          ? "warning"
+          : vibecodePresentation.variant === "error"
+            ? "destructive"
+            : "outline";
+  const vibecodeBadgeText = vibecodePresentation.label;
   const vibecodeBadgeTitle = [
     activeVibecodeKey
       ? `${activeVibecodeKey.label} (${activeVibecodeKey.redacted})`
       : "Vibecode key status",
-    vibecodeCredits ? `${formatVibecodeCredits(vibecodeCredits)} remaining` : undefined,
     vibecodeAuthStatus?.keyPool
-      ? `${vibecodeAuthStatus.keyPool.healthyCount} healthy, ${vibecodeAuthStatus.keyPool.exhaustedCount} exhausted, ${vibecodeAuthStatus.keyPool.invalidCount} invalid`
+      ? `${vibecodeAuthStatus.keyPool.healthyCount} healthy, ${vibecodeAuthStatus.keyPool.exhaustedCount} exhausted, ${vibecodeAuthStatus.keyPool.invalidCount} invalid, ${vibecodeAuthStatus.keyPool.unknownCount} unknown`
       : undefined,
     vibecodeAuthStatus?.message,
   ]

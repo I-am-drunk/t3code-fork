@@ -1707,11 +1707,18 @@ export default function ChatView(props: ChatViewProps) {
               ? error.message
               : "Unable to read Vibecode runtime or credit status.";
           setVibecodeAuthStatus({
-            status: "invalid",
+            status: "unknown",
+            reasonCode: "upstream_unavailable",
             authenticated: false,
             source: "none",
-            checkedAt,
+            keyPresent: false,
+            creditsKnown: false,
             message,
+            upstreamReason: message,
+            refreshing: false,
+            refreshVersion: 0,
+            runtimeInstanceId: "web-fallback",
+            checkedAt,
           });
           setVibecodeRuntimeStatus({
             providerReady: false,
@@ -1756,11 +1763,18 @@ export default function ChatView(props: ChatViewProps) {
       });
       setVibecodeAuthStatus({
         status: result.status,
+        reasonCode: result.reasonCode,
         authenticated: result.authenticated,
         source: "stored",
+        keyPresent: result.keyPresent,
+        creditsKnown: result.creditsKnown,
         checkedAt: result.checkedAt,
         ...(result.credits ? { credits: result.credits } : {}),
         ...(result.message ? { message: result.message } : {}),
+        ...(result.upstreamReason ? { upstreamReason: result.upstreamReason } : {}),
+        refreshing: false,
+        refreshVersion: result.refreshVersion,
+        runtimeInstanceId: result.runtimeInstanceId,
       });
       setVibecodeRotateMessage(
         result.message ?? (result.accepted ? "Key updated." : "Key rejected."),
@@ -1802,8 +1816,8 @@ export default function ChatView(props: ChatViewProps) {
   const vibecodeRecoveryBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     if (
       !isVibecodeSelected ||
-      (vibecodeAuthStatus?.status !== "missing" &&
-        vibecodeAuthStatus?.status !== "invalid" &&
+      (vibecodeAuthStatus?.status !== "missing_key" &&
+        vibecodeAuthStatus?.status !== "invalid_key" &&
         vibecodeAuthStatus?.status !== "exhausted")
     ) {
       return [];

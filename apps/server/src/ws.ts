@@ -937,12 +937,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 ...(input.projectId ? { projectId: input.projectId } : {}),
               }),
             ).pipe(
-              Effect.tap((result) =>
-                result.accepted
-                  ? providerRegistry
-                      .refresh()
-                      .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid)
-                  : Effect.void,
+              Effect.flatMap((result) =>
+                (result.accepted ? providerRegistry.refresh().pipe(Effect.ignoreCause({ log: true })) : Effect.void).pipe(
+                  Effect.as(result),
+                ),
               ),
             ),
             {
