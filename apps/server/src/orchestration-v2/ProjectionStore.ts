@@ -5441,16 +5441,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 }),
               catch: (cause) => new ProjectionStoreReadError({ threadId, cause }),
             });
-            const end = (page.items.at(-1)?.canonicalPosition ?? -1) + 1;
-            const hasUserTurns = index.visible
-              .slice(0, end)
-              .some((row) => isThreadHistoryUserTurn(row.item));
-            const materialized =
-              conversationOnly && hasUserTurns
-                ? page.items.filter((row) => isConversationHistoryItem(row.item))
-                : page.items;
             const sources = yield* encodeTimelineSources(
-              materialized
+              page.items
                 .filter((row) => !row.synthetic)
                 .map((row) => ({ threadId: row.sourceThreadId, id: row.sourceItemId })),
             );
@@ -5466,7 +5458,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const byIdentity = new Map(
               payloads.map((row) => [`${row.thread_id}:${row.turn_item_id}`, row.payload_json]),
             );
-            const items = yield* Effect.forEach(materialized, (row) =>
+            const items = yield* Effect.forEach(page.items, (row) =>
               Effect.gen(function* () {
                 const payload = byIdentity.get(`${row.sourceThreadId}:${row.sourceItemId}`);
                 const item =
@@ -5483,7 +5475,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 };
               }),
             );
-            // Human turns also need the byte limit after projecting bodies.
+            // Both views need the same bounded window. Filtering conversation
+            // rows first can preview messages outside the subsequent activity page.
             const bounded = selectRecentTimelineWindow({
               items,
               snapshotSequence,

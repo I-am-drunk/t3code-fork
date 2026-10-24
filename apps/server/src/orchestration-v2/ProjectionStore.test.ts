@@ -1585,20 +1585,35 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       yield* sql`
         UPDATE orchestration_v2_projection_turn_items
         SET payload_json = json_set(payload_json, '$.input', ${"x".repeat(400_000)})
-        WHERE thread_id = ${threadId} AND ordinal BETWEEN 997 AND 999
+        WHERE thread_id = ${threadId} AND ordinal BETWEEN 73 AND 75
       `;
       const serviceIds: string[] = [];
       let serviceCursor: string | null = encodeThreadHistoryCursor({
         snapshotSequence: initialSnapshot.snapshotSequence,
         sourceThreadId: threadId,
-        sourceItemId: TurnItemId.make("turn-item:bounded-sql-history:1000"),
-        position: 999,
+        sourceItemId: TurnItemId.make("turn-item:bounded-sql-history:76"),
+        position: 75,
       });
+      const preview = yield* projectionStore.getThreadHistoryPage(
+        threadId,
+        serviceCursor,
+        "message:bounded-sql-history:1",
+        true,
+      );
       // Fetching bodies must preserve the budgets enforced on the timeline index.
       for (let pages = 0; serviceCursor !== null; pages += 1) {
-        assert.isBelow(pages, 1_000);
-        const page = yield* projectionStore.getThreadHistoryPage(threadId, serviceCursor);
-        if (pages === 0) assert.lengthOf(page.items, 2);
+        assert.isBelow(pages, 75);
+        const page = yield* projectionStore.getThreadHistoryPage(
+          threadId,
+          serviceCursor,
+          "message:bounded-sql-history:1",
+        );
+        if (pages === 0) {
+          assert.lengthOf(page.items, 2);
+          assert.isEmpty(preview.items);
+          assert.equal(preview.nextCursor, page.nextCursor);
+          assert.equal(preview.hasMoreHistory, page.hasMoreHistory);
+        }
         assert.isAtMost(page.items.length, THREAD_HISTORY_PAGE_POLICY.maxItems);
         assert.isAtMost(
           page.items.reduce((bytes, row) => bytes + projectedRowEncodedBytes(row), 0),
@@ -1609,12 +1624,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }
       assert.deepEqual(
         serviceIds,
-        Array.from({ length: 999 }, (_, index) => `turn-item:bounded-sql-history:${index + 1}`),
+        Array.from({ length: 75 }, (_, index) => `turn-item:bounded-sql-history:${index + 1}`),
       );
       yield* sql`
         UPDATE orchestration_v2_projection_turn_items
         SET payload_json = json_set(payload_json, '$.input', 'echo ' || ordinal)
-        WHERE thread_id = ${threadId} AND ordinal BETWEEN 997 AND 999
+        WHERE thread_id = ${threadId} AND ordinal BETWEEN 73 AND 75
       `;
 
       const tiedIds = [
