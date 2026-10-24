@@ -308,14 +308,13 @@ function findCursorIndex(
   return Math.min(cursor.p, items.length);
 }
 
-export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
+// Reuse the targeted turn limit when SQL re-bounds materialized row bodies.
+export function olderHistoryPagePolicy<Row extends HistoryRow>(input: {
   readonly items: ReadonlyArray<Row>;
   readonly cursor: string;
-  readonly snapshotSequence: number;
   readonly policy?: ThreadHistoryPagePolicy | undefined;
-  readonly rowEncodedBytes?: ((row: Row) => number) | undefined;
   readonly throughEntryId?: string | undefined;
-}): SelectTimelinePageResult<Row> {
+}): ThreadHistoryPagePolicy {
   const decoded = decodeThreadHistoryCursor(input.cursor);
   const anchorIndex = findCursorIndex(input.items, decoded);
   let policy = input.policy ?? {
@@ -343,13 +342,75 @@ export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
       };
     }
   }
+  return policy;
+}
+
+export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
+  readonly items: ReadonlyArray<Row>;
+  readonly cursor: string;
+  readonly snapshotSequence: number;
+  readonly policy?: ThreadHistoryPagePolicy | undefined;
+  readonly rowEncodedBytes?: ((row: Row) => number) | undefined;
+  readonly throughEntryId?: string | undefined;
+}): SelectTimelinePageResult<Row> {
   return selectOlderTimelinePage({
     items: input.items,
-    exclusiveEndIndex: anchorIndex,
+    exclusiveEndIndex: findCursorIndex(input.items, decodeThreadHistoryCursor(input.cursor)),
     snapshotSequence: input.snapshotSequence,
     ...(input.rowEncodedBytes === undefined ? {} : { rowEncodedBytes: input.rowEncodedBytes }),
-    policy,
+    policy: olderHistoryPagePolicy(input),
   });
+}
+
+function interruptRunKey(row: Pick<HistoryRow, "item" | "sourceThreadId">): string | undefined {
+  return row.item.runId == null ? undefined : JSON.stringify([row.sourceThreadId, row.item.runId]);
+}
+
+// One factual request per run is enough to distinguish a stop from a legacy steer.
+export function historyInterruptRequests<Row extends HistoryRow>(
+  items: ReadonlyArray<Row>,
+  page: ReadonlyArray<Pick<HistoryRow, "item" | "sourceThreadId">>,
+): Row[] {
+  const needed = new Set(
+    page.filter((row) => row.item.type === "run_interrupt_result").map(interruptRunKey),
+  );
+  needed.delete(undefined);
+  return items.filter(
+    (row) => row.item.type === "run_interrupt_request" && needed.delete(interruptRunKey(row)),
+  );
+}
+
+export function boundHistoryPage(input: {
+  readonly items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+  readonly requests: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+  readonly snapshotSequence: number;
+  readonly policy: ThreadHistoryPagePolicy;
+}) {
+  const requestBytes = new Map(
+    input.requests.map((row) => [interruptRunKey(row), bytesOfJson(row.item)]),
+  );
+  const bounded = selectRecentTimelineWindow({
+    ...input,
+    // Reserve context rows and charge them with their result before selecting the window.
+    policy: {
+      ...input.policy,
+      maxItems: Math.max(1, input.policy.maxItems - input.requests.length),
+    },
+    rowEncodedBytes: (row) =>
+      projectedRowEncodedBytes(row) +
+      (row.item.type === "run_interrupt_result"
+        ? (requestBytes.get(interruptRunKey(row)) ?? 0)
+        : 0),
+  });
+  const visibleRequests = new Set(
+    bounded.items.filter((row) => row.item.type === "run_interrupt_request").map(interruptRunKey),
+  );
+  return {
+    ...bounded,
+    interruptRequests: historyInterruptRequests(input.requests, bounded.items)
+      .filter((row) => !visibleRequests.has(interruptRunKey(row)))
+      .map((row) => row.item),
+  };
 }
 
 function isLocalProjectedRow(

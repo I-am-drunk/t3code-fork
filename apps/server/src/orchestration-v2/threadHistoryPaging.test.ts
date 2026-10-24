@@ -13,6 +13,8 @@ import * as DateTime from "effect/DateTime";
 import {
   buildBoundedThreadProjection,
   boundedTimelineEncodedBytes,
+  boundHistoryPage,
+  historyInterruptRequests,
   computeLatestLocalTurnOrdinal,
   encodeThreadHistoryCursor,
   projectedRowBoundedSnapshotEncodedBytes,
@@ -332,6 +334,44 @@ describe("threadHistoryPaging", () => {
     expect(loaded.map((row) => ({ ...row, position: 0 }))).toEqual(
       items.map((row) => ({ ...row, position: 0 })),
     );
+  });
+
+  it("budgets interrupt context without moving its row or history cursor", () => {
+    const request = interruptRow(0, "run_interrupt_request");
+    const result = interruptRow(4, "run_interrupt_result");
+    const items = [request, makeRow(1), makeRow(2), makeRow(3), result];
+    const requests = historyInterruptRequests(items, [result]);
+    const resultBytes = projectedRowEncodedBytes(result);
+    const maxEncodedBytes = resultBytes + Buffer.byteLength(JSON.stringify(request.item));
+    const page = boundHistoryPage({
+      items,
+      requests,
+      snapshotSequence: 1,
+      policy: { maxItems: 3, maxEncodedBytes },
+    });
+    expect(page.items.map((row) => row.sourceItemId)).toEqual([result.sourceItemId]);
+    expect(page.interruptRequests).toEqual([request.item]);
+    expect(resultBytes + Buffer.byteLength(JSON.stringify(page.interruptRequests[0]))).toBeLessThanOrEqual(
+      maxEncodedBytes,
+    );
+    const older = selectHistoryPageFromCursor({
+      items,
+      cursor: page.nextCursor!,
+      snapshotSequence: 1,
+    });
+    expect(older.items.map((row) => row.sourceItemId)).toEqual(
+      items.slice(0, 4).map((row) => row.sourceItemId),
+    );
+    const foreign = { ...request, sourceThreadId: ThreadId.make("other-thread") };
+    expect(historyInterruptRequests([foreign, request, request], [result])).toEqual([request]);
+    const later = boundHistoryPage({
+      items: [...items, makeRow(5, { outputBytes: maxEncodedBytes })],
+      requests,
+      snapshotSequence: 1,
+      policy: { maxItems: 3, maxEncodedBytes },
+    });
+    expect(later.items.map((row) => row.sourceItemId)).toEqual(["item-5"]);
+    expect(later.interruptRequests).toEqual([]);
   });
 
   it("always includes at least one pathological oversized item", () => {

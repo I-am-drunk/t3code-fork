@@ -2036,6 +2036,25 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           (row) => row.sourceItemId === interruptResultId,
         ),
       );
+      const afterInterrupt = encodeThreadHistoryCursor({
+        snapshotSequence: 0,
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("after-interrupt"),
+        position: 10_000,
+      });
+      const interruptPage = yield* projectionStore.getThreadHistoryPage(threadId, afterInterrupt);
+      assert.isTrue(interruptPage.items.some((row) => row.sourceItemId === interruptResultId));
+      assert.isFalse(interruptPage.items.some((row) => row.sourceItemId === interruptRequestId));
+      assert.deepEqual(interruptPage.interruptRequests?.map((item) => item.id), [interruptRequestId]);
+      assert.isAtMost(
+        interruptPage.items.length + (interruptPage.interruptRequests?.length ?? 0),
+        THREAD_HISTORY_PAGE_POLICY.maxItems,
+      );
+      const beforeInterrupt = yield* projectionStore.getThreadHistoryPage(
+        threadId,
+        interruptPage.nextCursor!,
+      );
+      assert.isTrue(beforeInterrupt.items.some((row) => row.sourceItemId === interruptRequestId));
 
       yield* sql`
         UPDATE orchestration_v2_projection_turn_items
@@ -2066,6 +2085,39 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.isTrue(
         agentWindow.projection.visibleTurnItems.some((row) => row.sourceItemId === agentPromptId),
       );
+      yield* sql`
+        UPDATE orchestration_v2_projection_turn_items
+        SET type = 'user_message', payload_json = json_set(payload_json,
+          '$.type', 'user_message', '$.inputIntent', 'turn_start',
+          '$.createdBy', 'user', '$.creationSource', 'web',
+          '$.messageId', 'message:target:' || ordinal,
+          '$.text', 'Targeted history', '$.attachments', json('[]'))
+        WHERE thread_id = ${threadId} AND ordinal BETWEEN 401 AND 440
+      `;
+      const targetCursor = encodeThreadHistoryCursor({
+        snapshotSequence: 0,
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("turn-item:bounded-sql-history:441"),
+        position: 440,
+      });
+      const ordinaryPage = yield* projectionStore.getThreadHistoryPage(threadId, targetCursor);
+      assert.lengthOf(ordinaryPage.items, 20);
+      const targetedPage = yield* projectionStore.getThreadHistoryPage(
+        threadId,
+        targetCursor,
+        "message:target:411",
+      );
+      assert.deepEqual(
+        targetedPage.items.map((row) => row.item.ordinal),
+        Array.from({ length: 30 }, (_, index) => index + 411),
+      );
+      const targetedPreview = yield* projectionStore.getThreadHistoryPage(
+        threadId,
+        targetCursor,
+        "message:target:411",
+        true,
+      );
+      assert.deepEqual(targetedPreview, targetedPage);
     }),
   );
 
