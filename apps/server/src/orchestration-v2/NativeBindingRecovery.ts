@@ -114,8 +114,9 @@ export const prepare = Effect.fn("NativeBindingRecovery.prepare")(function* (com
     "Goal and native metadata are last-observed projections; native goal data was not changed. " +
     "Conversation is retained as historical context; do not replay tool calls.";
   const events: OrchestrationV2DomainEvent[] = [];
-  const append = (value: Omit<OrchestrationV2DomainEvent, "id" | "threadId" | "occurredAt">) =>
-    Effect.gen(function* () {
+  const append = Effect.fn("NativeBindingRecovery.append")(function* (
+    value: Omit<OrchestrationV2DomainEvent, "id" | "threadId" | "occurredAt">,
+  ) {
       events.push({ ...value, id: yield* ids.allocate.event({
         threadId: command.threadId, commandId: command.commandId,
       }), threadId: command.threadId, occurredAt: now } as OrchestrationV2DomainEvent);

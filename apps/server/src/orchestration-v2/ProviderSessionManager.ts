@@ -2304,8 +2304,8 @@ export const layerWithOptions = (
               return exposedRuntime;
             }),
           ),
-        hasOwnedThreadWork: (providerSessionId, providerThread) =>
-          Effect.gen(function* () {
+        hasOwnedThreadWork: Effect.fn("ProviderSessionManager.hasOwnedThreadWork")(
+          function* (providerSessionId, providerThread) {
             const key = sessionKey(providerSessionId);
             const entry = (yield* Ref.get(sessions)).get(key);
             if (entry === undefined) return false;
@@ -2316,7 +2316,8 @@ export const layerWithOptions = (
               return true;
             const current = (yield* Ref.get(sessions)).get(key);
             return current?.runtime !== entry.runtime || hasBusyTurn(current, providerThread.id);
-          }),
+          },
+        ),
         isLive: (providerSessionId) =>
           Ref.get(sessions).pipe(
             Effect.map((current) => current.has(sessionKey(providerSessionId))),

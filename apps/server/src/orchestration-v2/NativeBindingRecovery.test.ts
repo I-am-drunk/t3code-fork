@@ -148,8 +148,8 @@ it.effect("recovers a proven binding without confirming uncertain delivery", () 
   }).pipe(Effect.provide(layer)),
 );
 
-for (const field of ["expectedSequence", "priorBindingSequence", "expectedNativeThreadRef"] as const) {
-  it.effect(`refuses recovery with mismatched ${field}`, () =>
+it.effect.each(["expectedSequence", "priorBindingSequence", "expectedNativeThreadRef"] as const)(
+  "refuses recovery with mismatched %s", (field) =>
     Effect.gen(function* () {
       const f = yield* fixture;
       const command = { ...f.command,
@@ -160,8 +160,7 @@ for (const field of ["expectedSequence", "priorBindingSequence", "expectedNative
       expect((yield* Recovery.prepare(command).pipe(Effect.flip))._tag).toBe("NativeBindingRecoveryError");
       expect(yield* f.sink.latestSequence({ threadId: command.threadId })).toBe(f.command.expectedSequence);
     }).pipe(Effect.provide(layer)),
-  );
-}
+);
 
 it.effect("refuses to recover while a queued run owns the thread", () =>
   Effect.gen(function* () {
