@@ -2,6 +2,7 @@ import {
   ORCHESTRATION_CACHE_SCHEMA_VERSION,
   ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
   StoredOrchestrationThreadSnapshot,
+  decodeStoredOrchestrationThreadSnapshot as decodeStoredThreadSnapshot,
   Persistence,
   makeStoredShellSnapshotEncoder,
 } from "@t3tools/client-runtime/platform";
@@ -33,9 +34,6 @@ const StoredVcsRefs = Schema.Struct({
   refs: VcsListRefsResult,
 });
 
-const decodeStoredThreadSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(StoredOrchestrationThreadSnapshot),
-);
 const encodeStoredThreadSnapshot = Schema.encodeEffect(
   Schema.fromJsonString(StoredOrchestrationThreadSnapshot),
 );

@@ -7,8 +7,8 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * Item/byte budgets only apply to histories without turn starts; tool activity
- * must not split an ordinary conversation turn.
+ * Bound every history page, including a long-running conversation turn.
+ * Earlier activity remains accessible through the history cursor.
  */
 export const THREAD_HISTORY_PAGE_POLICY = {
   maxUserTurns: 10,
@@ -210,8 +210,8 @@ export function isThreadHistoryUserTurn(item: HistoryRow["item"]): boolean {
 }
 
 /**
- * Histories without turn starts use row budgets and always admit at least one
- * row so oversized items cannot deadlock paging.
+ * Walk toward earlier user turns within the row and byte budgets. Always
+ * admit at least one row so an oversized item cannot deadlock paging.
  */
 function selectOlderTimelinePage<Row extends HistoryRow>(input: {
   readonly items: ReadonlyArray<Row>;
@@ -238,12 +238,13 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
     : undefined;
   for (let index = end - 1; index >= 0; index -= 1) {
     const row = input.items[index]!;
-    const rowBytes = turnLimit === undefined ? rowCost(row) : 0;
+    const rowBytes = rowCost(row);
     if (
       selected.length > 0 &&
-      (turnLimit === undefined
-        ? selected.length >= policy.maxItems || encodedBytes + rowBytes > policy.maxEncodedBytes
-        : userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)
+      (selected.length >= policy.maxItems ||
+        encodedBytes + rowBytes > policy.maxEncodedBytes ||
+        (turnLimit !== undefined &&
+          (userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)))
     ) {
       break;
     }
