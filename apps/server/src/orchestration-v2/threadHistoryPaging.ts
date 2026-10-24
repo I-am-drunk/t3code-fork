@@ -308,14 +308,13 @@ function findCursorIndex(
   return Math.min(cursor.p, items.length);
 }
 
-export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
+// Reuse the targeted turn limit when SQL re-bounds materialized row bodies.
+export function olderHistoryPagePolicy<Row extends HistoryRow>(input: {
   readonly items: ReadonlyArray<Row>;
   readonly cursor: string;
-  readonly snapshotSequence: number;
   readonly policy?: ThreadHistoryPagePolicy | undefined;
-  readonly rowEncodedBytes?: ((row: Row) => number) | undefined;
   readonly throughEntryId?: string | undefined;
-}): SelectTimelinePageResult<Row> {
+}): ThreadHistoryPagePolicy {
   const decoded = decodeThreadHistoryCursor(input.cursor);
   const anchorIndex = findCursorIndex(input.items, decoded);
   let policy = input.policy ?? {
@@ -343,12 +342,23 @@ export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
       };
     }
   }
+  return policy;
+}
+
+export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
+  readonly items: ReadonlyArray<Row>;
+  readonly cursor: string;
+  readonly snapshotSequence: number;
+  readonly policy?: ThreadHistoryPagePolicy | undefined;
+  readonly rowEncodedBytes?: ((row: Row) => number) | undefined;
+  readonly throughEntryId?: string | undefined;
+}): SelectTimelinePageResult<Row> {
   return selectOlderTimelinePage({
     items: input.items,
-    exclusiveEndIndex: anchorIndex,
+    exclusiveEndIndex: findCursorIndex(input.items, decodeThreadHistoryCursor(input.cursor)),
     snapshotSequence: input.snapshotSequence,
     ...(input.rowEncodedBytes === undefined ? {} : { rowEncodedBytes: input.rowEncodedBytes }),
-    policy,
+    policy: olderHistoryPagePolicy(input),
   });
 }
 

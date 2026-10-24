@@ -2066,6 +2066,39 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.isTrue(
         agentWindow.projection.visibleTurnItems.some((row) => row.sourceItemId === agentPromptId),
       );
+      yield* sql`
+        UPDATE orchestration_v2_projection_turn_items
+        SET type = 'user_message', payload_json = json_set(payload_json,
+          '$.type', 'user_message', '$.inputIntent', 'turn_start',
+          '$.createdBy', 'user', '$.creationSource', 'web',
+          '$.messageId', 'message:target:' || ordinal,
+          '$.text', 'Targeted history', '$.attachments', json('[]'))
+        WHERE thread_id = ${threadId} AND ordinal BETWEEN 401 AND 440
+      `;
+      const targetCursor = encodeThreadHistoryCursor({
+        snapshotSequence: 0,
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("turn-item:bounded-sql-history:441"),
+        position: 440,
+      });
+      const ordinaryPage = yield* projectionStore.getThreadHistoryPage(threadId, targetCursor);
+      assert.lengthOf(ordinaryPage.items, 20);
+      const targetedPage = yield* projectionStore.getThreadHistoryPage(
+        threadId,
+        targetCursor,
+        "message:target:411",
+      );
+      assert.deepEqual(
+        targetedPage.items.map((row) => row.item.ordinal),
+        Array.from({ length: 30 }, (_, index) => index + 411),
+      );
+      const targetedPreview = yield* projectionStore.getThreadHistoryPage(
+        threadId,
+        targetCursor,
+        "message:target:411",
+        true,
+      );
+      assert.deepEqual(targetedPreview, targetedPage);
     }),
   );
 
