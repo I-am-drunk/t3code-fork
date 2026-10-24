@@ -20,6 +20,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
@@ -35,6 +36,12 @@ import {
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
+import {
+  ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+  StoredOrchestrationThreadSnapshot,
+  decodeOrDiscardOrchestrationCache,
+  decodeStoredOrchestrationThreadSnapshot,
+} from "../platform/orchestrationCache.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
@@ -320,6 +327,45 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
+  it.effect("reloads a bounded snapshot after rejecting a version-4 cache at the same sequence", () =>
+    Effect.gen(function* () {
+      const raw = Schema.encodeSync(Schema.fromJsonString(StoredOrchestrationThreadSnapshot))({
+        schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+        environmentId: TARGET.environmentId,
+        threadId: THREAD_ID,
+        snapshot: { snapshotSequence: CACHED_SNAPSHOT_SEQUENCE, projection: BASE_PROJECTION },
+      }).replace(`"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`, '"schemaVersion":4');
+      const discarded = yield* Ref.make(0);
+      const fresh = {
+        ...BASE_PROJECTION,
+        thread: { ...BASE_PROJECTION.thread, title: "Fresh bounded thread" },
+      };
+      const h = yield* makeHarness({
+        completionMarker: true,
+        loadCached: decodeOrDiscardOrchestrationCache(
+          decodeStoredOrchestrationThreadSnapshot(raw).pipe(
+            Effect.map((stored) => Option.some(stored.snapshot)),
+          ),
+          Ref.update(discarded, (count) => count + 1),
+        ),
+        httpSnapshot: {
+          _tag: "present",
+          snapshot: { snapshotSequence: CACHED_SNAPSHOT_SEQUENCE, projection: fresh },
+          history: { historyCursor: "fresh-bounded-cursor", hasMoreHistory: true },
+        },
+      });
+      yield* Queue.offer(h.inputs, synchronized());
+      const state = yield* awaitThreadState(h.observed, (value) => value.status === "live");
+      expect(yield* Ref.get(discarded)).toBe(1);
+      expect(yield* Ref.get(h.loaderCalls)).toBe(1);
+      expect(yield* Ref.get(h.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+      expect(yield* Ref.get(h.lastAcceptBoundedSnapshot)).toBe(true);
+      expect(Option.getOrThrow(state.data)).toEqual(fresh);
+      expect(state.history.historyCursor).toBe("fresh-bounded-cursor");
+      expect(state.history.hasMoreHistory).toBe(true);
+    }),
+  );
+
   it.effect("loads the server thread when its local cache read fails", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness({
