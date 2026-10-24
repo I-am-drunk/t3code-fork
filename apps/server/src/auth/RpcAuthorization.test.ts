@@ -136,7 +136,11 @@ describe("RPC scope middleware", () => {
 it.effect("native binding recovery requires maintenance permission", () =>
   Effect.gen(function* () {
     const method = ORCHESTRATION_V2_WS_METHODS.dispatchCommand;
-    const group = WsRpcGroup.pick(method);
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof method> => tag !== method,
+      ),
+    );
     let handled = false;
     const client = yield* RpcTest.makeClient(group).pipe(Effect.provide(Layer.mergeAll(
       group.toLayerHandler(method, () => Effect.sync(() => {
