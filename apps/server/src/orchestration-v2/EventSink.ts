@@ -146,6 +146,11 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    /** Recovery must not race newer events or claim another provider-thread's native ref. */
+    readonly nativeRecovery?: {
+      readonly expectedSequence: number;
+      readonly providerThread: OrchestrationV2ProviderThread;
+    };
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -199,6 +204,10 @@ export interface EventSinkV2Shape {
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
+  readonly readAtSequence: (input: {
+    readonly threadId: ThreadId;
+    readonly sequence: number;
+  }) => Effect.Effect<Option.Option<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -656,6 +665,27 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          if (input.nativeRecovery !== undefined) {
+            const { expectedSequence, providerThread } = input.nativeRecovery;
+            const sequence = yield* eventStore.latestSequence({ threadId: input.threadId });
+            const conflicts = yield* sql`
+              SELECT 1 FROM orchestration_v2_projection_provider_threads
+              WHERE provider_thread_id != ${providerThread.id}
+                AND driver = ${providerThread.driver}
+                AND provider_instance_id = ${providerThread.providerInstanceId}
+                AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${providerThread.nativeThreadRef?.nativeId}
+              UNION ALL
+              SELECT 1 FROM orchestration_v2_effect_outbox
+              WHERE thread_id = ${input.threadId} AND status IN ('pending', 'running')
+              LIMIT 1
+            `;
+            if (sequence !== expectedSequence || conflicts.length > 0) {
+              return yield* new EventSinkWriteError({
+                commandId: input.commandId, eventCount: input.events.length,
+                cause: "Native recovery snapshot changed or work remains owned.",
+              });
+            }
+          }
           const normalized = yield* normalizeEvents(input.events);
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
@@ -981,6 +1011,18 @@ const layerBase: Layer.Layer<
                 cause,
               }),
           ),
+        ),
+      readAtSequence: (input) =>
+        eventStore.read({
+          threadId: input.threadId,
+          afterSequence: input.sequence - 1,
+          throughSequence: input.sequence,
+          limit: 1,
+        }).pipe(
+          Stream.runHead,
+          Effect.mapError((cause) => new EventSinkStreamError({
+            threadId: input.threadId, afterSequence: input.sequence - 1, cause,
+          })),
         ),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(

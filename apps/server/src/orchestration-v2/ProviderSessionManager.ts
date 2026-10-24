@@ -163,6 +163,10 @@ export interface ProviderSessionManagerV2Shape {
     ProviderSessionManagerV2Error
   >;
   readonly isLive: (providerSessionId: ProviderSessionId) => Effect.Effect<boolean>;
+  readonly hasOwnedThreadWork: (
+    providerSessionId: ProviderSessionId,
+    providerThread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<boolean>;
   readonly close: (
     providerSessionId: ProviderSessionId,
   ) => Effect.Effect<void, ProviderSessionManagerV2Error>;
@@ -2280,6 +2284,19 @@ export const layerWithOptions = (
               return exposedRuntime;
             }),
           ),
+        hasOwnedThreadWork: (providerSessionId, providerThread) =>
+          Effect.gen(function* () {
+            const key = sessionKey(providerSessionId);
+            const entry = (yield* Ref.get(sessions)).get(key);
+            if (entry === undefined) return false;
+            if (hasBusyTurn(entry, providerThread.id)) return true;
+            const inspect = entry.runtime.hasPendingBackgroundWorkForThread;
+            if (inspect === undefined) return true;
+            if (yield* inspect(providerThread).pipe(Effect.catchCause(() => Effect.succeed(true))))
+              return true;
+            const current = (yield* Ref.get(sessions)).get(key);
+            return current?.runtime !== entry.runtime || hasBusyTurn(current, providerThread.id);
+          }),
         isLive: (providerSessionId) =>
           Ref.get(sessions).pipe(
             Effect.map((current) => current.has(sessionKey(providerSessionId))),

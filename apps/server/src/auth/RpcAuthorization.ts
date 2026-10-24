@@ -248,6 +248,13 @@ const requiredScopesForRpcCall = (
   method: string,
   payload: unknown,
 ): ReadonlyArray<AuthEnvironmentScope> => {
+  if (
+    method === ORCHESTRATION_V2_WS_METHODS.dispatchCommand &&
+    typeof payload === "object" && payload !== null && "type" in payload &&
+    payload.type === "provider-thread.recover-native"
+  ) {
+    return [AuthOrchestrationOperateScope, AuthEnvironmentMaintainScope];
+  }
   if (method === WS_METHODS.serverRetryResourceTelemetry) {
     return [AuthEnvironmentMaintainScope, AuthDiagnosticsReadScope];
   }

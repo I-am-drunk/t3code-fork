@@ -3,6 +3,8 @@ import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
+  CommandId,
+  EventId,
   ContextHandoffId,
   MessageId,
   NodeId,
@@ -15,6 +17,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
@@ -47,6 +50,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as NativeBindingRecovery from "./NativeBindingRecovery.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -705,6 +709,20 @@ function makeLocalCommandHarness(input: {
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>(() =>
     Effect.succeed(projection),
   );
+  const getTurnStartHistory = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getTurnStartHistory"]>(() =>
+    Effect.fail(new ProjectionStore.ProjectionStoreReadError({
+      threadId, cause: input.historyReadFailureAfterFallback,
+    })),
+  );
+  const write: EventSink.EventSinkV2Shape["write"] = ({ events: incoming }) =>
+    Effect.sync(() => {
+      for (const event of incoming) {
+        expect(isDomainEvent(event)).toBe(true);
+        events.push(event);
+        projection = ProjectionStore.applyToProjection(projection, event);
+      }
+      return [];
+    });
   const getTurnStartContext = vi.fn(() =>
     Effect.succeed({
       ...projection,
@@ -721,7 +739,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent, write }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
@@ -747,13 +765,7 @@ function makeLocalCommandHarness(input: {
                   (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
               ),
             }),
-          getTurnStartHistory: () =>
-            Effect.fail(
-              new ProjectionStore.ProjectionStoreReadError({
-                threadId,
-                cause: input.historyReadFailureAfterFallback,
-              }),
-            ),
+          getTurnStartHistory,
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
@@ -777,6 +789,8 @@ function makeLocalCommandHarness(input: {
     ),
   );
   return {
+    write,
+    getTurnStartHistory,
     getThreadRecords,
     getTurnStartContext,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
@@ -1146,6 +1160,111 @@ effectIt.effect("terminalizes a starting run when its provider session cannot op
         },
       },
     ]);
+  }),
+);
+
+const recoveredStartHarness = Effect.gen(function* () {
+  const harness = makeLocalCommandHarness({ text: "Continue", nativeGoal: true, uncertainHistory: true });
+  const initial = harness.projection();
+  const original = { ...initial.providerThreads[0]!, status: "idle" as const,
+    nativeMetadata: { itemIdentityVersion: 2 } };
+  const previous = { ...initial.runs[0]!, id: RunId.make("recovered-prior-run"),
+    ordinal: 1, status: "completed" as const, completedAt: initial.updatedAt };
+  const replacement = { ...original, goal: null,
+    nativeThreadRef: { ...original.nativeThreadRef!, nativeId: "replacement" } };
+  const historyItem = { id: TurnItemId.make("newer-conversation"), threadId: initial.thread.id,
+    runId: previous.id, nodeId: null, providerThreadId: original.id, providerTurnId: null,
+    nativeItemRef: null, parentItemId: null, ordinal: 1, status: "completed" as const,
+    title: null, startedAt: initial.updatedAt, completedAt: initial.updatedAt,
+    updatedAt: initial.updatedAt, type: "assistant_message" as const,
+    messageId: MessageId.make("newer-conversation"), text: "Newer retained conversation", streaming: false };
+  harness.getTurnStartHistory.mockImplementation(() => Effect.succeed([historyItem]));
+  harness.setProjection({ ...initial,
+    thread: { ...initial.thread, providerInstanceId: original.providerInstanceId,
+      archivedAt: null, deletedAt: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: initial.thread.id } },
+    runs: [previous], nodes: [], attempts: [], providerThreads: [replacement],
+    contextHandoffs: initial.contextHandoffs.map((handoff) => ({ ...handoff, targetRunId: previous.id })),
+  });
+  const plan = yield* NativeBindingRecovery.prepare({
+    type: "provider-thread.recover-native", commandId: CommandId.make("recover-for-start"),
+    threadId: initial.thread.id, providerThreadId: original.id,
+    expectedNativeThreadRef: replacement.nativeThreadRef, expectedSequence: 2,
+    priorBindingSequence: 1, acknowledgeUncertainHistory: true,
+  }).pipe(Effect.provide(Layer.mergeAll(
+    IdAllocator.layer,
+    ContextHandoffService.layer.pipe(Layer.provide(IdAllocator.layer)),
+    Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ hasOwnedThreadWork: () => Effect.succeed(false) }),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getRuntimeRecoveryProjection: () => Effect.succeed(harness.projection()),
+      getThreadRecords: harness.getThreadRecords,
+      getTurnStartHistory: harness.getTurnStartHistory,
+      getNextTurnItemOrdinal: () => Effect.succeed(2),
+    }),
+    Layer.mock(EventSink.EventSinkV2)({
+      latestSequence: () => Effect.succeed(2),
+      readAtSequence: () => Effect.succeed(Option.some({ sequence: 1, commandId: null,
+        event: { id: EventId.make("original-binding"), threadId: initial.thread.id,
+          occurredAt: initial.updatedAt, type: "provider-thread.updated", payload: original } })),
+    }),
+  )));
+  yield* harness.write({ events: plan.events });
+  harness.setProjection({ ...harness.projection(),
+    runs: [previous, ...initial.runs], nodes: initial.nodes, attempts: initial.attempts,
+  });
+  return harness;
+});
+
+effectIt.effect("keeps the recovered goal binding if its first native resume fails", () =>
+  Effect.gen(function* () {
+    const harness = yield* recoveredStartHarness;
+    const recovered = harness.projection().providerThreads[0];
+    yield* harness.start;
+    expect(harness.resumeFallbackSession.resumeThread).toHaveBeenCalledOnce();
+    expect(harness.resumeFallbackSession.ensureThread).not.toHaveBeenCalled();
+    expect(harness.projection().providerThreads[0]).toEqual(recovered);
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(recovered?.goal?.tokensUsed).toBe(1234);
+    expect(recovered?.nativeMetadata?.itemIdentityVersion).toBe(2);
+  }),
+);
+
+effectIt.effect("starts the recovered native thread with newer history and superseded pending delivery", () =>
+  Effect.gen(function* () {
+    const harness = yield* recoveredStartHarness;
+    const recovered = harness.projection().providerThreads[0]!;
+    const now = harness.projection().updatedAt;
+    const startTurn = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>(() => Effect.void);
+    const resumeThread = vi.fn<ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]>(
+      ({ providerThread }) => Effect.succeed(providerThread),
+    );
+    harness.open.mockImplementation(() => Effect.succeed({
+      driver: recovered.driver, resumeThread, startTurn,
+      ensureThread: harness.resumeFallbackSession.ensureThread,
+      providerSession: { id: recovered.providerSessionId!, driver: recovered.driver,
+        providerInstanceId: recovered.providerInstanceId, status: "ready",
+        cwd: "/tmp/native-account-command", model: null, capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now, updatedAt: now, lastError: null },
+    } as never));
+    harness.startRootRun.mockImplementation((input) => input.session.startTurn({
+      appThread: input.appThread, threadId: input.appThread.id,
+      runId: input.run.id, runOrdinal: input.run.ordinal, providerTurnOrdinal: input.providerTurnOrdinal,
+      attemptId: input.attemptId, rootNodeId: input.rootNode.id,
+      providerThread: input.providerThread, message: input.message,
+      modelSelection: input.modelSelection, runtimePolicy: input.runtimePolicy,
+    }).pipe(Effect.orDie));
+    yield* harness.start;
+    expect(resumeThread).toHaveBeenCalledOnce();
+    expect(harness.resumeFallbackSession.ensureThread).not.toHaveBeenCalled();
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(startTurn.mock.calls[0]?.[0].providerThread.nativeThreadRef).toEqual(recovered.nativeThreadRef);
+    expect(startTurn.mock.calls[0]?.[0].message.text).toContain("Newer retained conversation");
+    expect(startTurn.mock.calls[0]?.[0].message.text).toContain("do not replay tool calls");
+    const handoffs = harness.projection().contextHandoffs;
+    expect(handoffs.find((row) => row.id === "uncertain-handoff")).toMatchObject({
+      status: "superseded", delivery: { status: "pending" },
+    });
+    expect(handoffs.find((row) => row.resumeOnNativeThreadId !== undefined)?.delivery?.status).toBe("inline");
   }),
 );
 

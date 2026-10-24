@@ -103,7 +103,8 @@ import {
   isBufferedProviderNotification,
   isUndeliveredMailboxSteer,
 } from "./NotificationMailbox.ts";
-import { EventSinkV2 } from "./EventSink.ts";
+import { EventSinkV2, type EventSinkV2Shape } from "./EventSink.ts";
+import * as NativeBindingRecovery from "./NativeBindingRecovery.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -468,6 +469,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
     case "provider-session.detach":
+    case "provider-thread.recover-native":
     case "message.dispatch":
     case "notification.delivery.accept":
     case "prepared-run.release":
@@ -11232,6 +11234,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
       readonly effects: ReadonlyArray<PendingOrchestrationEffectV2>;
+      readonly nativeRecovery?: Parameters<EventSinkV2Shape["commitCommand"]>[0]["nativeRecovery"];
       readonly cancelUnsettledEffects?: {
         readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
         readonly reason: string;
@@ -11254,6 +11257,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       | undefined;
     switch (command.type) {
+      case "provider-thread.recover-native": {
+        const recovery = yield* NativeBindingRecovery.prepare(command).pipe(mapDispatchError(command));
+        return { ...recovery, effects: [] };
+      }
       case "thread.create":
         yield* dispatchThreadCreate(command, events);
         break;
@@ -11735,6 +11742,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
+        ...(plan.nativeRecovery === undefined ? {} : { nativeRecovery: plan.nativeRecovery }),
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),

@@ -263,7 +263,10 @@ export const layer: Layer.Layer<
         (handoff) =>
           (handoff.transferId == null || !subagentResultTransfers.has(handoff.transferId)) &&
           handoff.status === "ready" &&
-          (handoff.targetRunId === run.id ||
+          ((handoff.resumeOnNativeThreadId !== undefined &&
+            handoff.toProviderThreadId === run.providerThreadId &&
+            handoff.resumeOnNativeThreadId === providerThread?.nativeThreadRef?.nativeId) ||
+            handoff.targetRunId === run.id ||
             (handoff.toProviderThreadId === run.providerThreadId &&
               projection.runs.some(
                 (source) =>
@@ -739,6 +742,7 @@ export const layer: Layer.Layer<
         }
         const uncertainDelivery = projection.contextHandoffs.some(
           (handoff) =>
+            handoff.status !== "superseded" &&
             handoff.toProviderThreadId === providerThread.id &&
             handoff.delivery?.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
             handoff.delivery?.status === "pending",
@@ -1255,8 +1259,8 @@ export const layer: Layer.Layer<
               text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
             },
           }).pipe(
-            // A pending marker would make the next turn abandon this native
-            // session, though the refused prompt never reached it.
+            // A pending marker would fence the next turn, though the refused
+            // prompt never reached this native session.
             Effect.tapError((error) =>
               refusedBeforePrompt(error)
                 ? delivery.unsent.pipe(
@@ -1270,7 +1274,7 @@ export const layer: Layer.Layer<
             ),
           );
           // The provider already accepted the turn. A stale pending marker
-          // can force a fresh thread later, but must not stop live ingestion.
+          // requires recovery later, but must not stop live ingestion.
           yield* delivery.delivered.pipe(
             Effect.catchCause(() =>
               Effect.logWarning("Failed to record accepted context handoff delivery", {

@@ -13,7 +13,7 @@ import {
 } from "@t3tools/provider-core/server/handoffBudget";
 
 /**
- * Persist before/after injection: an ambiguous pending delivery requires a fresh native thread.
+ * Persist before/after injection: an ambiguous pending delivery requires explicit recovery.
  * Run `unsent` when the provider refused the turn before reading the prompt, so that
  * refusal does not leave an ambiguous marker behind.
  */
@@ -150,6 +150,6 @@ export class ContextHandoffDeliveryUncertainError extends Schema.TaggedError<Con
   {},
 ) {
   override get message() {
-    return "Historical context delivery is uncertain; replace the native thread before retrying.";
+    return "Historical context delivery is uncertain; recover the existing native thread before retrying.";
   }
 }

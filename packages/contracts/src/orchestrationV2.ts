@@ -926,6 +926,8 @@ export const OrchestrationV2HistoricalMessage = Schema.Struct({
 export type OrchestrationV2HistoricalMessage = typeof OrchestrationV2HistoricalMessage.Type;
 
 export const OrchestrationV2ContextHandoff = Schema.Struct({
+  /** Operator recovery history, delivered on the next start of this native thread. */
+  resumeOnNativeThreadId: Schema.optional(TrimmedNonEmptyString),
   id: ContextHandoffId,
   transferId: Schema.optional(Schema.NullOr(ContextTransferId)),
   threadId: ThreadId,
@@ -2787,6 +2789,16 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     providerSessionId: ProviderSessionId,
     reason: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-thread.recover-native"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    providerThreadId: ProviderThreadId,
+    expectedNativeThreadRef: OrchestrationV2ProviderRef,
+    expectedSequence: NonNegativeInt,
+    priorBindingSequence: PositiveInt,
+    acknowledgeUncertainHistory: Schema.Literal(true),
   }),
   Schema.Struct({
     type: Schema.Literal("message.dispatch"),

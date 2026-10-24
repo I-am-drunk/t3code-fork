@@ -1,5 +1,9 @@
 import {
   AuthEnvironmentMaintainScope,
+  CommandId,
+  ProviderThreadId,
+  ProviderDriverKind,
+  ORCHESTRATION_V2_WS_METHODS,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
   AuthProvidersManageScope,
@@ -128,6 +132,28 @@ describe("RPC scope middleware", () => {
     }).pipe(Effect.scoped),
   );
 });
+
+it.effect("native binding recovery requires maintenance permission", () =>
+  Effect.gen(function* () {
+    const method = ORCHESTRATION_V2_WS_METHODS.dispatchCommand;
+    const group = WsRpcGroup.pick(method);
+    let handled = false;
+    const client = yield* RpcTest.makeClient(group).pipe(Effect.provide(Layer.mergeAll(
+      group.toLayerHandler(method, () => Effect.sync(() => {
+        handled = true;
+        return { sequence: 1 };
+      })),
+      RpcAuthorization.layer([AuthOrchestrationOperateScope]),
+    )));
+    expect(yield* client[method]({
+      type: "provider-thread.recover-native", commandId: CommandId.make("recover"),
+      threadId: ThreadId.make("recover-thread"), providerThreadId: ProviderThreadId.make("recover-provider"),
+      expectedNativeThreadRef: { driver: ProviderDriverKind.make("codex"), nativeId: "current", strength: "strong" },
+      expectedSequence: 2, priorBindingSequence: 1, acknowledgeUncertainHistory: true,
+    }).pipe(Effect.flip)).toMatchObject({ requiredPermission: AuthEnvironmentMaintainScope });
+    expect(handled).toBe(false);
+  }).pipe(Effect.scoped),
+);
 
 describe("settings mutation authorization", () => {
   const group = WsRpcGroup.omit(
