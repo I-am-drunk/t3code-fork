@@ -9,7 +9,7 @@ import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection
 
 const NOW = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
 
-function row(index: number): OrchestrationV2ProjectedTurnItem {
+function row(index: number) {
   const id = `item-${index}` as never;
   return {
     position: index,
@@ -36,7 +36,7 @@ function row(index: number): OrchestrationV2ProjectedTurnItem {
       completedAt: NOW,
       updatedAt: NOW,
     },
-  };
+  } satisfies OrchestrationV2ProjectedTurnItem;
 }
 
 describe("threadHistoryMerge", () => {

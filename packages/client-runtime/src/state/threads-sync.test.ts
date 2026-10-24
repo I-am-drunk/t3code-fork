@@ -329,12 +329,18 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 describe("EnvironmentThreads", () => {
   it.effect("reloads a bounded snapshot after rejecting a version-4 cache at the same sequence", () =>
     Effect.gen(function* () {
-      const raw = Schema.encodeSync(Schema.fromJsonString(StoredOrchestrationThreadSnapshot))({
+      const encoded = yield* Schema.encodeEffect(
+        Schema.fromJsonString(StoredOrchestrationThreadSnapshot),
+      )({
         schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
         environmentId: TARGET.environmentId,
         threadId: THREAD_ID,
         snapshot: { snapshotSequence: CACHED_SNAPSHOT_SEQUENCE, projection: BASE_PROJECTION },
-      }).replace(`"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`, '"schemaVersion":4');
+      });
+      const raw = encoded.replace(
+        `"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`,
+        '"schemaVersion":4',
+      );
       const discarded = yield* Ref.make(0);
       const fresh = {
         ...BASE_PROJECTION,
