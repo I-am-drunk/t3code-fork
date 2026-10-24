@@ -2624,6 +2624,7 @@ it.effect("ProviderSessionManagerV2 never retries a waiting removal onto a repla
       const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const now = yield* DateTime.now;
       const threadId = ThreadId.make("thread-provider-session-manager-permit-overlap");
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const providerSessionId = yield* idAllocator.allocate.providerSession({
         providerInstanceId: modelSelection.instanceId, threadId,
       });
@@ -2650,7 +2651,43 @@ it.effect("ProviderSessionManagerV2 never retries a waiting removal onto a repla
       yield* Fiber.join(second);
       assert.deepEqual(yield* manager.get(providerSessionId), Option.some(replacement));
       assert.equal((yield* Ref.get(state)).closeCount, 1);
+      const projection = yield* projectionStore.getThreadProjection(threadId);
+      assert.equal(projection.providerSessions.at(-1)?.status, "ready");
+      assert.equal(
+        projection.runtimeRequests.find((candidate) => candidate.id === request.requestId)?.responseCapability.type,
+        "not_resumable",
+      );
     }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, flakyReleaseWrites: flaky })));
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 releases an interrupted attachment while holding its open lock", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const armed = yield* Ref.make(true);
+    const paused = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread-provider-session-manager-release-open-lock");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId, threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now })],
+      });
+      const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+      const opening = yield* manager.open(input).pipe(Effect.forkScoped);
+      yield* Deferred.await(paused);
+      yield* Fiber.interrupt(opening);
+      assert.isFalse(yield* manager.isLive(providerSessionId));
+      assert.equal((yield* Ref.get(state)).closeCount, 1);
+      const replacement = yield* manager.open(input);
+      assert.deepEqual(yield* manager.get(providerSessionId), Option.some(replacement));
+      assert.equal((yield* projectionStore.getThreadProjection(threadId)).providerSessions.at(-1)?.status, "ready");
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, pauseAttachWrite: { armed, paused } })));
   }),
 );
 
