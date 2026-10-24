@@ -30,6 +30,7 @@ import {
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as CodexClient from "effect-codex-app-server/client";
+import * as CodexError from "effect-codex-app-server/errors";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 import * as DateTime from "effect/DateTime";
@@ -720,6 +721,7 @@ describe("CodexAdapterV2 session initialize", () => {
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
       });
       return {
+        runtime,
         ensureThread: (threadId: string) =>
           runtime.ensureThread({
             threadId: ThreadId.make(threadId),
@@ -732,6 +734,22 @@ describe("CodexAdapterV2 session initialize", () => {
 
   const replayPreamble = (nativeThreadId: string) =>
     codexReplayPreamble({ nativeThreadId, nativeTurnId: "unused", prompt: "unused" });
+
+  it.effect("reports a clean idle Codex exit through the adapter event stream", () =>
+    Effect.gen(function* () {
+      const session = yield* openReplaySession(makeCodexReplayTranscript({
+        scenario: "idle-clean-exit",
+        entries: [{ type: "runtime_exit", status: "success" }],
+      }));
+      const error = yield* session.runtime.events.pipe(Stream.runDrain, Effect.flip);
+      assert.instanceOf(error, ProviderAdapter.ProviderAdapterEventStreamError);
+      assert.instanceOf(error.cause, CodexError.CodexAppServerProcessExitedError);
+      assert.equal(session.initializeRequests(), 0);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+    ),
+  );
 
   it.effect("sends one initialize when two threads start on a fresh session at once", () =>
     Effect.gen(function* () {

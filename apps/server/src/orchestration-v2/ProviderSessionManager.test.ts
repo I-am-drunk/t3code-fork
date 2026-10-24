@@ -2484,7 +2484,17 @@ it.effect("ProviderSessionManagerV2 releases sessions when provider event stream
         runtimePolicy,
       });
       yield* runtime.events.pipe(Stream.runDrain, Effect.ignore, Effect.forkScoped);
-      yield* Effect.yieldNow;
+      const released = yield* eventSink.stream({ threadId, eventType: "provider-session.updated" }).pipe(
+        Stream.filter((stored) =>
+          stored.event.type === "provider-session.updated" &&
+          stored.event.payload.status === "error",
+        ),
+        Stream.runHead,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+      yield* Queue.failCause(queue, Cause.die(new Error("process exited")));
+      yield* Fiber.join(released);
 
       const liveSession = yield* manager.get(providerSessionId);
       const runtimeState = yield* Ref.get(state);
@@ -2493,6 +2503,10 @@ it.effect("ProviderSessionManagerV2 releases sessions when provider event stream
       assert.isTrue(Option.isNone(liveSession));
       assert.equal(runtimeState.closeCount, 1);
       assert.equal(projection.providerSessions.at(-1)?.status, "error");
+      const replacement = yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      assert.notStrictEqual(replacement, runtime);
+      assert.equal((yield* Ref.get(state)).openCount, 2);
+      assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
     });
 
     yield* effect.pipe(
@@ -2500,7 +2514,6 @@ it.effect("ProviderSessionManagerV2 releases sessions when provider event stream
         layerTest({
           state,
           idleTimeoutMs: 1000,
-          failEventStream: true,
         }),
       ),
     );
