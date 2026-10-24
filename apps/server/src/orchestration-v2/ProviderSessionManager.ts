@@ -920,42 +920,42 @@ export const layerWithOptions = (
 
       // A request the event pump is persisting for this runtime lands before
       // the cutoff, and once the entry is gone the pump persists no more for
-      // it.
+      // it. Activity may update an entry while removal waits for its permit,
+      // but a replacement runtime must never inherit its predecessor's release.
       const removeLiveEntry = Effect.fn("ProviderSessionManager.removeLiveEntry")(
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
+          readonly expectedRuntime?: ProviderAdapter.ProviderAdapterV2SessionRuntime;
           readonly onlyIfIdleGeneration?: number;
         }): Effect.fn.Return<readonly [Option.Option<LiveSessionEntry>, DateTime.Utc]> {
           const key = sessionKey(input.providerSessionId);
           const candidate = (yield* Ref.get(sessions)).get(key);
-          if (candidate === undefined) {
+          if (
+            candidate === undefined ||
+            (input.expectedRuntime !== undefined && candidate.runtime !== input.expectedRuntime)
+          ) {
             return [Option.none<LiveSessionEntry>(), yield* DateTime.now] as const;
           }
           const removed = yield* Effect.zip(
             Ref.modify(sessions, (current) => {
               const existing = current.get(key);
-              if (existing !== candidate) {
-                return [existing === undefined ? "gone" : "changed", current] as const;
+              if (existing?.runtime !== candidate.runtime) {
+                return [Option.none<LiveSessionEntry>(), current] as const;
               }
               if (
                 input.onlyIfIdleGeneration !== undefined &&
                 (existing.busyTurns.size > 0 ||
                   existing.idleGeneration !== input.onlyIfIdleGeneration)
               ) {
-                return ["kept", current] as const;
+                return [Option.none<LiveSessionEntry>(), current] as const;
               }
               const updated = new Map(current);
               updated.delete(key);
-              return ["removed", updated] as const;
+              return [Option.some(existing), updated] as const;
             }),
             DateTime.now,
           ).pipe(candidate.requestEventPermit.withPermits(1));
-          const [outcome, releasedAt] = removed;
-          if (outcome === "changed") return yield* removeLiveEntry(input);
-          return [
-            outcome === "removed" ? Option.some(candidate) : Option.none<LiveSessionEntry>(),
-            releasedAt,
-          ] as const;
+          return removed;
         },
       );
 
@@ -997,6 +997,7 @@ export const layerWithOptions = (
 
       const releaseEntry = (input: {
         readonly providerSessionId: ProviderSessionId;
+        readonly expectedRuntime?: ProviderAdapter.ProviderAdapterV2SessionRuntime;
         readonly reason: ProviderSessionReleaseReason;
         readonly detail?: string;
         readonly detachedThreadId?: ThreadId;
@@ -1176,6 +1177,7 @@ export const layerWithOptions = (
           // entry removal.
           yield* releaseEntry({
             providerSessionId: input.providerSessionId,
+            expectedRuntime: probedRuntime,
             reason: "idle_timeout",
             cancelIdleFiber: false,
             onlyIfIdleGeneration: input.generation,
@@ -2042,6 +2044,7 @@ export const layerWithOptions = (
               if (stoppedByProvider && Exit.isSuccess(exit)) {
                 yield* releaseEntry({
                   providerSessionId: entry.runtime.providerSessionId,
+                  expectedRuntime: entry.runtime,
                   reason: "manual_shutdown",
                   gracefulSubscribers: true,
                 }).pipe(logReleaseFailure(entry.runtime.providerSessionId));
@@ -2065,6 +2068,7 @@ export const layerWithOptions = (
               yield* Ref.set(entry.eventSubscribers, new Map());
               yield* releaseEntry({
                 providerSessionId: entry.runtime.providerSessionId,
+                expectedRuntime: entry.runtime,
                 reason: "runtime_error",
                 detail: Cause.pretty(cause),
               }).pipe(logReleaseFailure(entry.runtime.providerSessionId));
@@ -2084,6 +2088,7 @@ export const layerWithOptions = (
           (entry) =>
             releaseEntry({
               providerSessionId: entry.runtime.providerSessionId,
+              expectedRuntime: entry.runtime,
               reason: "server_shutdown",
             }).pipe(
               Effect.catchCause((cause) =>
@@ -2268,11 +2273,13 @@ export const layerWithOptions = (
                     Cause.hasInterruptsOnly(cause)
                       ? {
                           providerSessionId: input.providerSessionId,
+                          expectedRuntime: runtime,
                           reason: "manual_shutdown",
                           detail: "The provider session start was interrupted.",
                         }
                       : {
                           providerSessionId: input.providerSessionId,
+                          expectedRuntime: runtime,
                           reason: "runtime_error",
                           detail: "Failed to persist the provider-session attachment.",
                         },
@@ -2341,6 +2348,7 @@ export const layerWithOptions = (
               (entry) =>
                 releaseEntry({
                   providerSessionId: entry.runtime.providerSessionId,
+                  expectedRuntime: entry.runtime,
                   reason: "manual_shutdown",
                   detail: `Provider instance ${instanceId} logged out.`,
                 }).pipe(Effect.exit),
@@ -2476,6 +2484,7 @@ export const layerWithOptions = (
             ) {
               yield* releaseEntry({
                 providerSessionId: input.providerSessionId,
+                expectedRuntime: detached.value.runtime,
                 reason: "manual_shutdown",
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
                 detachedThreadId: input.threadId,

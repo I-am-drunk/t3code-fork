@@ -1,6 +1,7 @@
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { vi } from "vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   EnvironmentId,
@@ -18,12 +19,14 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import { dual } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -2517,6 +2520,132 @@ it.effect("ProviderSessionManagerV2 releases sessions when provider event stream
         }),
       ),
     );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 keeps a replacement while an old pump delivers failure", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const paused = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    const resume = yield* Deferred.make<void>();
+    const offer = Queue.offer;
+    let armed = true;
+    // Hold only failure delivery, after the pump has checked its live runtime.
+    const pausedOffer: typeof Queue.offer = dual(2, <A, E>(queue: Queue.Enqueue<A, E>, value: A) =>
+      Effect.suspend(() => {
+        if (
+          !armed ||
+          typeof value !== "object" ||
+          value === null ||
+          !("type" in value) ||
+          value.type !== "failure"
+        ) {
+          return offer(queue, value);
+        }
+        armed = false;
+        return Effect.withFiber((fiber) =>
+          Deferred.succeed(paused, fiber).pipe(
+            Effect.andThen(Deferred.await(resume)),
+            Effect.andThen(offer(queue, value)),
+          ),
+        );
+      }),
+    );
+    using _offer = vi.spyOn(Queue, "offer").mockImplementation(pausedOffer);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread-provider-session-manager-pump-overlap");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId, threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now })],
+      });
+      const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+      const runtime = yield* manager.open(input);
+      const subscription = yield* runtime.subscribeEvents!;
+      const oldQueue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+      yield* Queue.failCause(oldQueue, Cause.die(new Error("old process exited")));
+      const oldPump = yield* Deferred.await(paused);
+      yield* manager.close(providerSessionId);
+      const replacement = yield* manager.open(input);
+      yield* Deferred.succeed(resume, undefined);
+      yield* Fiber.join(oldPump);
+      assert.deepEqual(yield* manager.get(providerSessionId), Option.some(replacement));
+      assert.equal((yield* Ref.get(state)).closeCount, 1);
+      assert.equal((yield* projectionStore.getThreadProjection(threadId)).providerSessions.at(-1)?.status, "ready");
+      assert.isTrue(Exit.isFailure(yield* subscription.events.pipe(Stream.runDrain, Effect.exit)));
+      const next = yield* replacement.subscribeEvents!;
+      const event: ProviderAdapter.ProviderAdapterV2Event = {
+        type: "provider_session.updated", driver: CODEX_DRIVER,
+        providerSession: replacement.providerSession,
+      };
+      yield* Queue.offer((yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!, event);
+      assert.deepEqual(yield* next.events.pipe(Stream.runHead), Option.some(event));
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 never retries a waiting removal onto a replacement", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const removed = yield* Deferred.make<void>();
+    const finishRemoval = yield* Deferred.make<void>();
+    const clock = yield* Clock.Clock;
+    const firstTimestamp = yield* Ref.make(true);
+    // Removal reads its timestamp after deleting the entry, still holding
+    // the old permit. Install the replacement while the second close waits.
+    const releaseClock: Clock.Clock = {
+      ...clock,
+      currentTimeMillis: Effect.gen(function* () {
+        if (yield* Ref.getAndSet(firstTimestamp, false)) {
+          yield* Deferred.succeed(removed, undefined);
+          yield* Deferred.await(finishRemoval);
+        }
+        return yield* clock.currentTimeMillis;
+      }),
+    };
+    const pause = { paused: yield* Deferred.make<void>(), resume: yield* Deferred.make<void>() };
+    const flaky: FlakyReleaseWrites = {
+      failing: yield* Ref.make<"none" | "session" | "session-and-requests">("none"),
+      failures: yield* Queue.unbounded<void>(), pauseRequestWrites: pause,
+    };
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-permit-overlap");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId, threadId,
+      });
+      yield* eventSink.write({ events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })] });
+      const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+      yield* manager.open(input);
+      const request = yield* makePendingRuntimeRequestEvents({
+        idAllocator, threadId, providerSessionId, now,
+        providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+      });
+      const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+      yield* Queue.offerAll(queue, request.providerEvents);
+      yield* Deferred.await(pause.paused);
+      const first = yield* manager.close(providerSessionId).pipe(
+        Effect.provideService(Clock.Clock, releaseClock), Effect.forkScoped({ startImmediately: true }),
+      );
+      const second = yield* manager.close(providerSessionId).pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Deferred.succeed(pause.resume, undefined);
+      yield* Deferred.await(removed);
+      assert.isFalse(yield* manager.isLive(providerSessionId));
+      const replacement = yield* manager.open(input);
+      yield* Deferred.succeed(finishRemoval, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      assert.deepEqual(yield* manager.get(providerSessionId), Option.some(replacement));
+      assert.equal((yield* Ref.get(state)).closeCount, 1);
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, flakyReleaseWrites: flaky })));
   }),
 );
 
