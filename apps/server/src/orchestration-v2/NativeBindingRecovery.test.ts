@@ -206,13 +206,18 @@ it.effect("reconciles a pending handoff on the original binding without reducing
 it.effect("atomically refuses recovery while a pending effect still owns the thread", () =>
   Effect.gen(function* () {
     const f = yield* fixture;
-    const plan = yield* Recovery.prepare(f.command);
     const commandId = CommandId.make("pending-start");
     yield* f.sink.commitCommand({ commandId, threadId: f.command.threadId,
-      commandType: "message.dispatch", acceptedAt: f.now, events: [], effects: [{
+      commandType: "message.dispatch", acceptedAt: f.now, events: [{
+        id: EventId.make("pending-effect-setup"), type: "provider-thread.updated",
+        threadId: f.command.threadId, occurredAt: f.now, payload: f.current,
+      }], effects: [{
         id: "pending-start-effect", commandId, threadId: f.command.threadId,
         request: { type: "provider-turn.start", runId: f.run.id },
       }] });
+    const plan = yield* Recovery.prepare({ ...f.command,
+      expectedSequence: yield* f.sink.latestSequence({ threadId: f.command.threadId }),
+    });
     expect((yield* f.commit(plan).pipe(Effect.flip))._tag).toBe("EventSinkWriteError");
     const rows = yield* f.store.getThreadRecords(f.command.threadId, ["providerThreads", "contextHandoffs"]);
     expect(rows.providerThreads[0]?.nativeThreadRef).toEqual(f.current.nativeThreadRef);
