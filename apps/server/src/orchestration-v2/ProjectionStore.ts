@@ -2954,11 +2954,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   FROM eligible
                   WHERE ordinal >= (SELECT ordinal FROM boundary)
                   ORDER BY ordinal DESC, turn_item_id DESC
-                  LIMIT CASE
-                    WHEN ${window.rowLimit} = 0 THEN 0
-                    WHEN (SELECT COUNT(*) FROM user_anchors) > 0 THEN -1
-                    ELSE ${window.rowLimit}
-                  END
+                  LIMIT ${window.rowLimit}
                 ), retained AS MATERIALIZED (
                   SELECT item_rowid, ordinal, turn_item_id FROM selected
                   UNION
@@ -5487,12 +5483,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 };
               }),
             );
-            if (hasUserTurns)
-              return {
-                ...page,
-                snapshotSequence,
-                items: items.map((row, position) => ({ ...row, position })),
-              };
+            // Human turns also need the byte limit after projecting bodies.
             const bounded = selectRecentTimelineWindow({
               items,
               snapshotSequence,
@@ -7306,12 +7297,13 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
               (index) => index >= rawStart && isThreadHistoryUserTurn(candidates[index]!.item),
             );
             const anchorLimit = (options.userTurnLimit ?? 0) + 2;
-            const start =
+            const turnStart =
               anchors.length > 0
                 ? anchors.length < anchorLimit
                   ? rawStart
                   : anchors.at(-anchorLimit)!
-                : Math.max(0, anchorIndex - options.rowLimit);
+                : 0;
+            const start = Math.max(turnStart, anchorIndex - options.rowLimit, 0);
             const visibleTurnItems = candidates.slice(start);
             return {
               ...snapshot,

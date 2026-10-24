@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { EnvironmentId, EventId, TurnItemId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -7,9 +7,11 @@ import * as Schema from "effect/Schema";
 import {
   ORCHESTRATION_CACHE_SCHEMA_VERSION,
   ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+  MAX_THREAD_CACHE_BYTES,
   StoredOrchestrationShellSnapshot,
   StoredOrchestrationThreadSnapshot,
   decodeOrDiscardOrchestrationCache,
+  decodeStoredOrchestrationThreadSnapshot,
 } from "./orchestrationCache.ts";
 import {
   v2Now,
@@ -35,6 +37,40 @@ class TestCacheDecodeError extends Schema.TaggedError<TestCacheDecodeError>()(
 ) {}
 
 describe("orchestration cache envelopes", () => {
+  it.effect.each([
+    ["ASCII", "x", MAX_THREAD_CACHE_BYTES + 1],
+    ["UTF-8", "界", Math.floor(MAX_THREAD_CACHE_BYTES / 3) + 1],
+  ] as const)("discards oversized %s thread caches before JSON parsing", ([, character, count]) =>
+    Effect.gen(function* () {
+      using parse = vi.spyOn(JSON, "parse");
+      const raw = character.repeat(count);
+      let discarded = 0;
+      const loaded = yield* decodeOrDiscardOrchestrationCache(
+        decodeStoredOrchestrationThreadSnapshot(raw).pipe(Effect.map(Option.some)),
+        Effect.sync(() => {
+          discarded += 1;
+        }),
+      );
+      expect(Option.isNone(loaded)).toBe(true);
+      expect(discarded).toBe(1);
+      expect(parse.mock.calls.some(([input]) => input === raw)).toBe(false);
+    }),
+  );
+
+  it.effect("loads a bounded current thread cache", () =>
+    Effect.gen(function* () {
+      const snapshot = { snapshotSequence: 4, projection: v2Projection };
+      const raw = encodeStoredThreadSnapshotJson({
+        schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+        environmentId,
+        threadId: v2ThreadId,
+        snapshot,
+      });
+      const decoded = yield* decodeStoredOrchestrationThreadSnapshot(raw);
+      expect(decoded.snapshot).toEqual(snapshot);
+    }),
+  );
+
   it("preserves live provider notices through persisted thread snapshots", () => {
     const item = {
       id: TurnItemId.make("notice-cache"),
@@ -74,13 +110,16 @@ describe("orchestration cache envelopes", () => {
     expect(decoded.visibleTurnItems.find((entry) => entry.item.id === item.id)?.item).toEqual(item);
   });
 
-  it("rejects thread snapshots saved before queued-run items were kept, but not shells", () => {
+  it.each([3, 4])("rejects stale thread cache version %s, but not shells", (version) => {
     const staleThread = encodeStoredThreadSnapshotJson({
       schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
       environmentId,
       threadId: v2ThreadId,
       snapshot: { snapshotSequence: 4, projection: v2Projection },
-    }).replace(`"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`, `"schemaVersion":3`);
+    }).replace(
+      `"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`,
+      `"schemaVersion":${version}`,
+    );
     expect(() => decodeStoredThreadSnapshotJson(staleThread)).toThrow();
     const shell = encodeStoredShellSnapshot({
       schemaVersion: ORCHESTRATION_CACHE_SCHEMA_VERSION,
