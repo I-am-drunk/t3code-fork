@@ -191,6 +191,22 @@ describe("orchestration V2 contracts", () => {
         hasMoreHistory: false,
       }).items.map((row) => row.item.id),
     ).toEqual(["item-known"]);
+    const stopRequest = item("item-stop-request", "run_interrupt_request", {
+      message: "Stopping",
+      runId: "run-1",
+      nodeId: "node-1",
+    });
+    const contextualPage = decodeHistoryPage({
+      snapshotSequence: 1,
+      items: [projected(1, known)],
+      interruptRequests: [future, stopRequest],
+      nextCursor: null,
+      hasMoreHistory: false,
+    });
+    expect(contextualPage.interruptRequests?.map((request) => request.id)).toEqual([
+      "item-stop-request",
+    ]);
+    expect(contextualPage.items.map((row) => row.item.id)).toEqual(["item-known"]);
 
     const broken = item("item-broken", "system_notice", {});
     expect(() => decodeWireItems([turnItemEvent(4, broken)])).toThrow();

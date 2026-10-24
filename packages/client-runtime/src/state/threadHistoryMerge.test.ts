@@ -1,6 +1,7 @@
 import type { OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import { isOrchestrationV2SupersededInterrupt } from "@t3tools/shared/orchestrationV2Timeline";
 
 import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import { mergeOlderHistoryIntoProjection } from "./threadHistoryMerge.ts";
@@ -39,6 +40,45 @@ function row(index: number): OrchestrationV2ProjectedTurnItem {
 }
 
 describe("threadHistoryMerge", () => {
+  it("retains paged stop context without moving earlier history rows", () => {
+    const request = {
+      ...row(0),
+      item: {
+        ...row(0).item,
+        type: "run_interrupt_request" as const,
+        message: "Stopping",
+        runId: "run-stop" as never,
+        nodeId: "node-stop" as never,
+      },
+    };
+    const result = {
+      ...row(4),
+      item: {
+        ...request.item,
+        id: row(4).sourceItemId,
+        ordinal: 5,
+        type: "run_interrupt_result" as const,
+        message: "Stopped",
+      },
+    };
+    const initial = { ...v2Projection, turnItems: [row(5).item], visibleTurnItems: [row(5)] };
+    const partial = mergeOlderHistoryIntoProjection(initial, [result], [request.item]);
+    expect(partial.visibleTurnItems.map((item) => item.sourceItemId)).toEqual(["item-4", "item-5"]);
+    expect(
+      isOrchestrationV2SupersededInterrupt({
+        item: result.item,
+        attempts: [{ runId: request.item.runId, rootNodeId: request.item.nodeId, status: "superseded" }],
+        items: partial.turnItems,
+      }),
+    ).toBe(false);
+    const middle = mergeOlderHistoryIntoProjection(partial, [row(2), row(3)]);
+    const complete = mergeOlderHistoryIntoProjection(middle, [request, row(1)]);
+    expect(complete.visibleTurnItems.map((item) => item.sourceItemId)).toEqual(
+      [0, 1, 2, 3, 4, 5].map((index) => `item-${index}`),
+    );
+    expect(complete.turnItems.filter((item) => item.id === request.sourceItemId)).toHaveLength(1);
+  });
+
   it("fills activity around partial messages in canonical order and preserves live edits", () => {
     const initial = { ...v2Projection, turnItems: [row(4).item], visibleTurnItems: [row(4)] };
     const preview = [row(1), row(3)];

@@ -362,6 +362,57 @@ export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
   });
 }
 
+function interruptRunKey(row: Pick<HistoryRow, "item" | "sourceThreadId">): string | undefined {
+  return row.item.runId == null ? undefined : JSON.stringify([row.sourceThreadId, row.item.runId]);
+}
+
+// One factual request per run is enough to distinguish a stop from a legacy steer.
+export function historyInterruptRequests<Row extends HistoryRow>(
+  items: ReadonlyArray<Row>,
+  page: ReadonlyArray<Pick<HistoryRow, "item" | "sourceThreadId">>,
+): Row[] {
+  const needed = new Set(
+    page.filter((row) => row.item.type === "run_interrupt_result").map(interruptRunKey),
+  );
+  needed.delete(undefined);
+  return items.filter(
+    (row) => row.item.type === "run_interrupt_request" && needed.delete(interruptRunKey(row)),
+  );
+}
+
+export function boundHistoryPage(input: {
+  readonly items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+  readonly requests: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+  readonly snapshotSequence: number;
+  readonly policy: ThreadHistoryPagePolicy;
+}) {
+  const requestBytes = new Map(
+    input.requests.map((row) => [interruptRunKey(row), bytesOfJson(row.item)]),
+  );
+  const bounded = selectRecentTimelineWindow({
+    ...input,
+    // Reserve context rows and charge them with their result before selecting the window.
+    policy: {
+      ...input.policy,
+      maxItems: Math.max(1, input.policy.maxItems - input.requests.length),
+    },
+    rowEncodedBytes: (row) =>
+      projectedRowEncodedBytes(row) +
+      (row.item.type === "run_interrupt_result"
+        ? (requestBytes.get(interruptRunKey(row)) ?? 0)
+        : 0),
+  });
+  const visibleRequests = new Set(
+    bounded.items.filter((row) => row.item.type === "run_interrupt_request").map(interruptRunKey),
+  );
+  return {
+    ...bounded,
+    interruptRequests: historyInterruptRequests(input.requests, bounded.items)
+      .filter((row) => !visibleRequests.has(interruptRunKey(row)))
+      .map((row) => row.item),
+  };
+}
+
 function isLocalProjectedRow(
   projection: OrchestrationV2ThreadProjection,
   row: OrchestrationV2ProjectedTurnItem,

@@ -2036,6 +2036,25 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           (row) => row.sourceItemId === interruptResultId,
         ),
       );
+      const afterInterrupt = encodeThreadHistoryCursor({
+        snapshotSequence: 0,
+        sourceThreadId: threadId,
+        sourceItemId: TurnItemId.make("after-interrupt"),
+        position: 10_000,
+      });
+      const interruptPage = yield* projectionStore.getThreadHistoryPage(threadId, afterInterrupt);
+      assert.isTrue(interruptPage.items.some((row) => row.sourceItemId === interruptResultId));
+      assert.isFalse(interruptPage.items.some((row) => row.sourceItemId === interruptRequestId));
+      assert.deepEqual(interruptPage.interruptRequests?.map((item) => item.id), [interruptRequestId]);
+      assert.isAtMost(
+        interruptPage.items.length + (interruptPage.interruptRequests?.length ?? 0),
+        THREAD_HISTORY_PAGE_POLICY.maxItems,
+      );
+      const beforeInterrupt = yield* projectionStore.getThreadHistoryPage(
+        threadId,
+        interruptPage.nextCursor!,
+      );
+      assert.isTrue(beforeInterrupt.items.some((row) => row.sourceItemId === interruptRequestId));
 
       yield* sql`
         UPDATE orchestration_v2_projection_turn_items

@@ -1,6 +1,7 @@
 import type {
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ThreadProjection,
+  OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { isOrchestrationV2TurnItemVisible } from "@t3tools/shared/orchestrationV2Timeline";
 
@@ -52,8 +53,9 @@ function renumberVisible(
 export function mergeOlderHistoryIntoProjection(
   projection: OrchestrationV2ThreadProjection,
   olderItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
+  interruptRequests: ReadonlyArray<OrchestrationV2TurnItem> = [],
 ): OrchestrationV2ThreadProjection {
-  if (olderItems.length === 0) {
+  if (olderItems.length === 0 && interruptRequests.length === 0) {
     return projection;
   }
 
@@ -61,6 +63,16 @@ export function mergeOlderHistoryIntoProjection(
     projection.visibleTurnItems.map((row) => [projectedItemKey(row), row]),
   );
   const turnItemById = new Map(projection.turnItems.map((item) => [String(item.id), item]));
+  for (const item of interruptRequests) {
+    if (
+      item.type === "run_interrupt_request" &&
+      item.threadId === projection.thread.id &&
+      !turnItemById.has(String(item.id))
+    ) {
+      turnItemById.set(String(item.id), item);
+    }
+  }
+  const addedContext = turnItemById.size > projection.turnItems.length;
   const pageKeys = new Set<string>();
   const page: OrchestrationV2ProjectedTurnItem[] = [];
   for (const pageRow of olderItems) {
@@ -94,12 +106,15 @@ export function mergeOlderHistoryIntoProjection(
     )
       turnItemById.set(String(row.sourceItemId), row.item);
   }
-  if (page.length === 0) return projection;
+  if (page.length === 0) {
+    return addedContext ? { ...projection, turnItems: [...turnItemById.values()] } : projection;
+  }
   const visible = [
     ...page,
     ...projection.visibleTurnItems.filter((row) => !pageKeys.has(projectedItemKey(row))),
   ];
   if (
+    !addedContext &&
     visible.length === projection.visibleTurnItems.length &&
     visible.every((row, index) => row === projection.visibleTurnItems[index])
   )

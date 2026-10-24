@@ -93,8 +93,9 @@ import {
   isConversationHistoryItem,
   threadHistoryTurnStarts,
   THREAD_HISTORY_MAX_RAW_TURNS,
+  boundHistoryPage,
+  historyInterruptRequests,
   selectHistoryPageFromCursor,
-  selectRecentTimelineWindow,
   THREAD_HISTORY_PAGE_POLICY,
   olderHistoryPagePolicy,
 } from "./threadHistoryPaging.ts";
@@ -5445,49 +5446,58 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               },
               catch: (cause) => new ProjectionStoreReadError({ threadId, cause }),
             });
-            const sources = yield* encodeTimelineSources(
-              page.items
-                .filter((row) => !row.synthetic)
-                .map((row) => ({ threadId: row.sourceThreadId, id: row.sourceItemId })),
-            );
-            const payloads = yield* sql<{
-              thread_id: string;
-              turn_item_id: string;
-              payload_json: string;
-            }>`
+            const materialize = Effect.fn("ProjectionStore.materializeHistoryRows")(function* (
+              rows: ReadonlyArray<(typeof indexed)[number]>,
+            ) {
+              if (rows.length === 0) return [];
+              const sources = yield* encodeTimelineSources(
+                rows
+                  .filter((row) => !row.synthetic)
+                  .map((row) => ({ threadId: row.sourceThreadId, id: row.sourceItemId })),
+              );
+              const payloads = yield* sql<{
+                thread_id: string;
+                turn_item_id: string;
+                payload_json: string;
+              }>`
           SELECT item.thread_id, item.turn_item_id, item.payload_json
           FROM orchestration_v2_projection_turn_items item JOIN json_each(${sources}) wanted
           ON item.thread_id = json_extract(wanted.value, '$.threadId')
             AND item.turn_item_id = json_extract(wanted.value, '$.id')`;
-            const byIdentity = new Map(
-              payloads.map((row) => [`${row.thread_id}:${row.turn_item_id}`, row.payload_json]),
-            );
-            const items = yield* Effect.forEach(page.items, (row) =>
-              Effect.gen(function* () {
-                const payload = byIdentity.get(`${row.sourceThreadId}:${row.sourceItemId}`);
-                const item =
-                  row.synthetic ??
-                  (payload === undefined
-                    ? yield* new ProjectionStoreReadError({ threadId })
-                    : yield* decodeTurnItemPayload(payload));
-                return {
-                  position: row.canonicalPosition,
-                  visibility: row.visibility,
-                  sourceThreadId: row.sourceThreadId,
-                  sourceItemId: row.sourceItemId,
-                  item: projectTurnItemForWire(item),
-                };
-              }),
-            );
+              const byIdentity = new Map(
+                payloads.map((row) => [`${row.thread_id}:${row.turn_item_id}`, row.payload_json]),
+              );
+              return yield* Effect.forEach(rows, (row) =>
+                Effect.gen(function* () {
+                  const payload = byIdentity.get(`${row.sourceThreadId}:${row.sourceItemId}`);
+                  const item =
+                    row.synthetic ??
+                    (payload === undefined
+                      ? yield* new ProjectionStoreReadError({ threadId })
+                      : yield* decodeTurnItemPayload(payload));
+                  return {
+                    position: row.canonicalPosition,
+                    visibility: row.visibility,
+                    sourceThreadId: row.sourceThreadId,
+                    sourceItemId: row.sourceItemId,
+                    item: projectTurnItemForWire(item),
+                  };
+                }),
+              );
+            });
+            const items = yield* materialize(page.items);
+            const requests = yield* materialize(historyInterruptRequests(indexed, page.items));
             // Both views need the same bounded window. Filtering conversation
             // rows first can preview messages outside the subsequent activity page.
-            const bounded = selectRecentTimelineWindow({
+            const bounded = boundHistoryPage({
               items,
+              requests,
               snapshotSequence,
               policy,
             });
             return {
               snapshotSequence,
+              interruptRequests: bounded.interruptRequests,
               items: conversationOnly
                 ? bounded.items.filter((row) => isConversationHistoryItem(row.item))
                 : bounded.items,
@@ -7230,21 +7240,36 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 return yield* new ProjectionStoreThreadNotFoundError({ threadId });
               return yield* Effect.try({
                 try: () => {
+                  const visible = projection.visibleTurnItems.map((row, canonicalPosition) => ({
+                    ...row,
+                    canonicalPosition,
+                    item: projectTurnItemForWire(row.item),
+                  }));
+                  const policy = olderHistoryPagePolicy({ items: visible, cursor, throughEntryId });
                   const page = selectHistoryPageFromCursor({
-                    items: projection.visibleTurnItems.map((row) => ({
-                      ...row,
-                      item: projectTurnItemForWire(row.item),
-                    })),
+                    items: visible,
                     cursor,
-                    throughEntryId,
+                    policy,
+                    rowEncodedBytes: () => 0,
                     snapshotSequence,
                   });
-                  return {
-                    ...page,
+                  const bounded = boundHistoryPage({
+                    items: page.items.map(({ canonicalPosition, ...row }) => ({
+                      ...row,
+                      position: canonicalPosition,
+                    })),
+                    requests: historyInterruptRequests(visible, page.items),
                     snapshotSequence,
+                    policy,
+                  });
+                  return {
+                    snapshotSequence,
+                    interruptRequests: bounded.interruptRequests,
                     items: conversationOnly
-                      ? page.items.filter((row) => isConversationHistoryItem(row.item))
-                      : page.items,
+                      ? bounded.items.filter((row) => isConversationHistoryItem(row.item))
+                      : bounded.items,
+                    nextCursor: bounded.hasMoreHistory ? bounded.nextCursor : page.nextCursor,
+                    hasMoreHistory: bounded.hasMoreHistory || page.hasMoreHistory,
                   };
                 },
                 catch: (cause) => new ProjectionStoreReadError({ threadId, cause }),

@@ -3255,6 +3255,8 @@ export type OrchestrationV2ThreadBoundedSnapshot = typeof OrchestrationV2ThreadB
 
 export const OrchestrationV2ThreadHistoryPage = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  // Context for interpreting stop results, without moving older rows into this page.
+  interruptRequests: Schema.optionalKey(turnItemArray(OrchestrationV2TurnItem)),
   items: projectedTurnItemArray(
     OrchestrationV2ProjectedTurnItem,
     OrchestrationV2ProjectedTurnItem.mapFields((fields) => ({
