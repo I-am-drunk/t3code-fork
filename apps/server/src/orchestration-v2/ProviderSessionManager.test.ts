@@ -56,6 +56,11 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
+vi.mock("effect/Queue", async (importOriginal) => {
+  const original = await importOriginal<typeof Queue>();
+  return { ...original, offer: vi.fn(original.offer) };
+});
+
 const layerTestDatabase = SqlitePersistence.layerMemory;
 const layerTestStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provide(layerTestDatabase),
@@ -2528,7 +2533,7 @@ it.effect("ProviderSessionManagerV2 keeps a replacement while an old pump delive
     const state = yield* Ref.make(emptyState);
     const paused = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
     const resume = yield* Deferred.make<void>();
-    const offer = Queue.offer;
+    const { offer } = yield* Effect.promise(() => vi.importActual<typeof Queue>("effect/Queue"));
     let armed = true;
     // Hold only failure delivery, after the pump has checked its live runtime.
     const pausedOffer: typeof Queue.offer = dual(2, <A, E>(queue: Queue.Enqueue<A, E>, value: A) =>
@@ -2551,7 +2556,7 @@ it.effect("ProviderSessionManagerV2 keeps a replacement while an old pump delive
         );
       }),
     );
-    using _offer = vi.spyOn(Queue, "offer").mockImplementation(pausedOffer);
+    using _offer = vi.mocked(Queue.offer).mockImplementation(pausedOffer);
     yield* Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
